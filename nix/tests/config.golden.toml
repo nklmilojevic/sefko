@@ -1,0 +1,16 @@
+fetch_timeout = "60s"
+ttl = "168h"
+
+[secrets.github]
+account = "my.1password.eu"
+env = "GH_TOKEN"
+ref = "op://Private/GitHub Personal Access Token/token"
+
+[secrets.github.validate]
+format = "Bearer {}"
+header = "Authorization"
+url = "https://api.github.com/user"
+
+[secrets.restic]
+account = "my.1password.eu"
+ref = "op://Private/restic/password"

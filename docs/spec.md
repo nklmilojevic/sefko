@@ -1,6 +1,6 @@
 # sefko: specification
 
-Status: approved
+Status: approved; implemented (M1–M4)
 Date: 2026-10-20
 
 sefko is a per-user agent that keeps 1Password secrets in memory and serves
@@ -74,15 +74,16 @@ Does not protect against (accepted trade-offs)
 
 A single Go binary, `sefko`, acts as both agent (`sefko agent`) and client
 (every other subcommand). It uses cgo for IOKit power notifications, `os_log`
-and `proc_pidpath`. Platform code lives in `internal/platform/darwin` behind
-interfaces (`SleepNotifier`, `AuditLogger`, `PeerInfo`).
+and `proc_pidpath`. Platform code lives in `internal/platform` behind
+interfaces (`SleepNotifier`, `Logger`, `PeerInspector`), with macOS in
+build-tagged `_darwin` files and fail-closed stubs elsewhere.
 
 ### Components
 
 - **Config loader.** Reads `~/.config/sefko/config.toml` (rendered by Home Manager; it holds refs only, never values). It reloads on SIGHUP and when the file changes, without restarting. An entry whose `ref` or `account` changed is wiped; unchanged entries keep their cached value.
 - **Cache.** Maps alias → entry `{value: lockedBuffer, fetchedAt, lastUsed, hits}`.
 - **Fetcher.** Runs `op read --account <account> --no-newline <ref>` using the absolute `op` path from config, with a 60 s timeout. Concurrent misses for one alias share one fetch (singleflight). Failures are never cached.
-- **Validator.** Optional per secret. Makes an HTTP request with the value and treats 2xx as valid and 401 as invalid. Anything else, including 403 and network errors, is *unknown* and never triggers a refresh. At most one validation per alias per 60 s; within that window the last result is reused.
+- **Validator.** Optional per secret. Makes an HTTP request with the value and treats 2xx as valid and 401 as invalid. Anything else, including 403 and network errors, is *unknown* and never triggers a refresh. At most one validation per alias per 60 s; within that window the last result is reused. After a 401 refresh the remembered result is *unknown*, because the new value has not been checked, so a quick retry cannot cause a second refresh.
 - **Sleep watcher.** `IORegisterForSystemPower`. On `kIOMessageSystemWillSleep` it wipes all entries, then acknowledges the message. Display sleep and screen lock are ignored. As a backstop, a wall-clock gap of more than 5 minutes against the monotonic clock between ticks (checked every 30 s) is treated as a missed sleep and also wipes.
 - **Server.** Unix socket listener. One request per connection, 5 s read deadline.
 
@@ -196,6 +197,7 @@ message, and nothing is cached.
 ## 10. nix-darwin / Home Manager integration
 
 The flake (`github:nklmilojevic/sefko`) exposes:
+- `packages.<darwin>.gh`: gh wrapped with `nix/gh-wrapper.sh` (§11), so nix-config can use it instead of maintaining its own copy
 - `packages.aarch64-darwin.default` (`buildGoModule` with cgo, `CGO_ENABLED=1`, frameworks `IOKit` and `CoreFoundation`)
 - `homeManagerModules.default`
 - `devShells.default`: go, gopls, golangci-lint, just, gotestsum. Never mise.
@@ -223,7 +225,7 @@ programs.sefko = {
 
 The module:
 - writes `xdg.configFile."sefko/config.toml"`
-- defines `launchd.agents.sefko` with `ProgramArguments = [ "${pkg}/bin/sefko" "agent" ]`, `RunAtLoad`, `KeepAlive.SuccessfulExit = false`, `ProcessType = "Interactive"` and no `StandardOutPath` (logging goes to `os_log`)
+- defines `launchd.agents.sefko` with `ProgramArguments = [ "${pkg}/bin/sefko" "agent" "--config" <config> "--socket" ~/.local/state/sefko/agent.sock ]` (explicit paths, because launchd's environment differs from the shell's), `RunAtLoad`, `KeepAlive.SuccessfulExit = false`, `ProcessType = "Interactive"` and no `StandardOutPath` (logging goes to `os_log`)
 - adds the package to `home.packages`
 - sends SIGHUP on activation when only the config changed (via `launchctl kill HUP gui/$UID/org.nix-community.home.sefko`), so a config-only `darwin-rebuild switch` keeps the cache. A binary change restarts the agent, which costs one prompt.
 
@@ -231,7 +233,7 @@ The module:
 
 1. **Flake input:** `sefko.url = "github:nklmilojevic/sefko";` and import `sefko.homeManagerModules.default` in the Darwin Home Manager config, with the `programs.sefko` block above.
 
-2. **`gh` wrapper** (`modules/shared/packages/core.nix`, `gh-1password`). Replace the `op read` line:
+2. **`gh` wrapper** (`modules/shared/packages/core.nix`, `gh-1password`). Either replace `gh-1password` with `inputs.sefko.packages.${system}.gh`, or keep it and replace the `op read` line with the same logic:
 
    ```sh
    #!/bin/sh
