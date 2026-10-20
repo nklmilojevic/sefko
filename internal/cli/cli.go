@@ -125,6 +125,10 @@ func (a *app) agentCmd() *cobra.Command {
 		Short: "Run the agent in the foreground (launchd runs this)",
 		Args:  cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
+			// Catch SIGHUP first: its default action would kill the agent.
+			hup := make(chan os.Signal, 1)
+			signal.Notify(hup, syscall.SIGHUP)
+			defer signal.Stop(hup)
 			syscall.Umask(0o077)
 			peers, sleep, log := platform.Default()
 			if logStderr {
@@ -143,9 +147,6 @@ func (a *app) agentCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			hup := make(chan os.Signal, 1)
-			signal.Notify(hup, syscall.SIGHUP)
-			defer signal.Stop(hup)
 			go func() {
 				for range hup {
 					_ = ag.Reload()
