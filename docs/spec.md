@@ -294,6 +294,7 @@ No real 1Password and no real GitHub in any automated test.
 ## 13. Milestones
 
 - **M0, spike (manual, you):** confirm that `op read` started from a launchd user agent shows the 1Password approval dialog and succeeds in clamshell mode, and find how long op's app-integration authorization lasts for a long-running parent. This decides whether the design holds; if launchd-spawned op can't authorize, fall back to fetching in the client (`sefko get` runs op in the terminal and hands the value to the agent).
+  **Result (2026-10-20): passed.** A launchd user agent (`ProcessType = Interactive`) running `op read` in a loop got the 1Password approval dialog; after approval it returned the 40-byte token (`rc=0`). A second read 30 s later from the same parent succeeded with no dialog. The fetch stays in the agent. How long the approval lasts beyond that was not measured; it does not affect the design, because the agent only runs op on a cache miss.
 - **M1, core:** agent and client for `get`, `status`, `lock` and `refresh`, with socket, peer check, allowlist config, fake-op test harness and fallback to direct op.
 - **M2, lifetime:** TTL, IOKit sleep wipe and clock-gap backstop, locked memory, `RLIMIT_CORE`/`PT_DENY_ATTACH`, os_log audit, config hot reload.
 - **M3, ergonomics:** `exec`, `env`, `validate` with rate limiting.
@@ -318,6 +319,6 @@ No real 1Password and no real GitHub in any automated test.
 
 ## 15. Open questions
 
-- M0 result: does op's app integration authorize a launchd-spawned `op`, and for how long? This decides where the fetch runs.
+- How long op's app-integration approval lasts for a long-running parent (M0 confirmed it covers at least 30 s; documented limits are 10 min idle, 12 h maximum).
 - Per-secret TTL and wipe-on-sleep overrides, for example restic with 1 day. Deferred until a second secret is added.
 - If MailerLite colleagues ever want this, the policy owner should review §3 first.
