@@ -60,6 +60,10 @@ type IO struct {
 	Stderr io.Writer
 	// Exec replaces the current process; tests substitute it.
 	Exec func(path string, argv, env []string) error
+	// StdinIsTerminal decides whether wrap may run a command again.
+	StdinIsTerminal func() bool
+	// Launchctl runs /bin/launchctl; tests substitute it.
+	Launchctl func(args ...string) error
 }
 
 type app struct {
@@ -72,6 +76,12 @@ type app struct {
 func Execute(version string, args []string, stdio IO) int {
 	if stdio.Exec == nil {
 		stdio.Exec = syscall.Exec
+	}
+	if stdio.Launchctl == nil {
+		stdio.Launchctl = runLaunchctl
+	}
+	if stdio.StdinIsTerminal == nil {
+		stdio.StdinIsTerminal = func() bool { return platform.IsTerminal(int(os.Stdin.Fd())) }
 	}
 	a := &app{io: stdio}
 	root := a.root(version)
@@ -108,10 +118,12 @@ func (a *app) root(version string) *cobra.Command {
 		a.getCmd(),
 		a.execCmd(),
 		a.envCmd(),
+		a.wrapCmd(),
 		a.refreshCmd(),
 		a.validateCmd(),
 		a.lockCmd(),
 		a.statusCmd(),
+		a.serviceCmd(),
 	)
 	return root
 }
@@ -323,10 +335,7 @@ func (a *app) execCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := a.io.Exec(path, argv, mergeEnv(os.Environ(), vals)); err != nil {
-				return exit(ExitError, fmt.Errorf("exec %s: %w", argv[0], err))
-			}
-			return nil
+			return a.exec(path, argv, mergeEnv(os.Environ(), vals))
 		},
 	}
 	cmd.Flags().StringArrayVar(&overrides, "env", nil, "set NAME to the value of alias (repeatable)")

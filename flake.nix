@@ -23,6 +23,7 @@
         sefko = final.callPackage ./package.nix {
           version = self.shortRev or self.dirtyShortRev or "dev";
         };
+        sefkoWrap = final.callPackage ./nix/wrap.nix { };
         gh-sefko = final.callPackage ./nix/gh.nix { };
       };
 
@@ -40,6 +41,10 @@
     in
     {
       overlays.default = overlay;
+
+      # Wraps a package so its program gets a token from sefko:
+      # sefko.lib.mkWrapper pkgs { package = pkgs.glab; secret = "gitlab"; }
+      lib.mkWrapper = pkgs: (pkgs.extend overlay).sefkoWrap;
 
       homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
 
@@ -69,10 +74,10 @@
             go
             gopls
             golangci-lint
+            goreleaser
             gotestsum
             just
             nixpkgs-fmt
-            shellcheck
             git
           ];
         };

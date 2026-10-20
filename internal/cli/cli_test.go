@@ -26,6 +26,8 @@ type env struct {
 	op   *fakeop.Fake
 	cfg  string
 	sock string
+	tty  bool
+	ctl  [][]string
 	exec struct {
 		path string
 		argv []string
@@ -33,7 +35,9 @@ type env struct {
 	}
 }
 
-func setup(t *testing.T, withAgent bool) *env {
+// setup writes a config with the github and plain secrets plus extra, and
+// starts an agent for it when withAgent is set.
+func setup(t *testing.T, withAgent bool, extra ...string) *env {
 	t.Helper()
 	e := &env{t: t, op: fakeop.Setup(t)}
 	base := os.TempDir()
@@ -57,7 +61,7 @@ env = "GH_TOKEN"
 [secrets.plain]
 ref = "op://Private/Plain/password"
 account = "acc.example"
-`, e.op.Path)
+`, e.op.Path) + strings.Join(extra, "\n")
 	if err := os.WriteFile(e.cfg, []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -91,6 +95,11 @@ func (e *env) run(args ...string) (code int, stdout, stderr string) {
 		Stderr: &errb,
 		Exec: func(path string, argv, env []string) error {
 			e.exec.path, e.exec.argv, e.exec.env = path, argv, env
+			return nil
+		},
+		StdinIsTerminal: func() bool { return e.tty },
+		Launchctl: func(args ...string) error {
+			e.ctl = append(e.ctl, args)
 			return nil
 		},
 	})

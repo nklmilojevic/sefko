@@ -148,3 +148,9 @@ func disableCoreDumps() error {
 }
 
 func denyAttach() error { return unix.PtraceDenyAttach() }
+
+// IsTerminal reports whether fd is a terminal.
+func IsTerminal(fd int) bool {
+	_, err := unix.IoctlGetTermios(fd, unix.TIOCGETA)
+	return err == nil
+}

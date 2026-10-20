@@ -1,0 +1,96 @@
+version: 2
+project_name: sefko
+
+before:
+  hooks:
+    - go mod download
+    - go test ./...
+
+# cgo links the macOS frameworks, so this runs on macOS with the system
+# toolchain. A Nix toolchain links libraries from /nix/store, and those
+# binaries do not run on a Mac without Nix.
+builds:
+  - id: sefko
+    main: ./cmd/sefko
+    binary: sefko
+    env:
+      - CGO_ENABLED=1
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Tag }}
+    goos: [darwin]
+    goarch: [amd64, arm64]
+
+# macOS binaries are signed and notarized when the signing secrets exist
+# (GoReleaser uses quill for this); without them the step is skipped.
+notarize:
+  macos:
+    - enabled: '{{ isEnvSet "MACOS_SIGN_P12" }}'
+      ids: [sefko]
+      sign:
+        certificate: "{{ .Env.MACOS_SIGN_P12 }}"
+        password: "{{ .Env.MACOS_SIGN_PASSWORD }}"
+      notarize:
+        issuer_id: "{{ .Env.MACOS_NOTARY_ISSUER_ID }}"
+        key_id: "{{ .Env.MACOS_NOTARY_KEY_ID }}"
+        key: "{{ .Env.MACOS_NOTARY_KEY }}"
+        wait: true
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"
+
+# The cask goes to the tap only when the release has a token for it.
+homebrew_casks:
+  - name: sefko
+    repository:
+      owner: nklmilojevic
+      name: homebrew-sefko
+      token: '{{ envOrDefault "HOMEBREW_TAP_TOKEN" "" }}'
+    skip_upload: '{{ if isEnvSet "HOMEBREW_TAP_TOKEN" }}auto{{ else }}true{{ end }}'
+    homepage: https://github.com/nklmilojevic/sefko
+    description: Keeps 1Password secrets in memory and gives them to your tools without a new prompt each time
+    license: MIT
+    commit_author:
+      name: Nikola Milojević
+      email: nikola@milojevic.me
+    generate_completions_from_executable:
+      args: [completion]
+      shell_parameter_format: cobra
+      shells: [bash, zsh, fish]
+    hooks:
+      post:
+        # Until the releases are notarized, Gatekeeper refuses a quarantined
+        # binary. The step does nothing to a notarized one.
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sefko"]
+          end
+    uninstall:
+      launchctl: [io.nkl.sefko]
+    zap:
+      trash:
+        - ~/Library/LaunchAgents/io.nkl.sefko.plist
+        - ~/.config/sefko
+        - ~/.local/state/sefko
+    caveats: |
+      Write ~/.config/sefko/config.toml, then start the agent:
+        sefko service install
+
+# vesnik writes its own release notes; GoReleaser only attaches binaries to
+# the release vesnik already published.
+changelog:
+  disable: true
+
+release:
+  mode: keep-existing
