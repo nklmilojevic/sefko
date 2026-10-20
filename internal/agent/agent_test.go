@@ -497,6 +497,27 @@ func TestBadRequests(t *testing.T) {
 	}
 }
 
+func TestAuditQuotesPeerFields(t *testing.T) {
+	h := start(t, "")
+	_, _ = h.client.Get("x\nop=lock result=ok")
+	for line := range strings.SplitSeq(h.logs.String(), "\n") {
+		if strings.HasPrefix(line, "op=lock") {
+			t.Fatalf("forged audit line: %q", line)
+		}
+	}
+}
+
+func TestInvalidConfigLoggedOnce(t *testing.T) {
+	h := start(t, "")
+	h.writeConfig("not [ toml")
+	for range 3 {
+		_ = h.agent.Reload()
+	}
+	if n := strings.Count(h.logs.String(), "keeping the previous config"); n != 1 {
+		t.Fatalf("logged %d times", n)
+	}
+}
+
 func TestNames(t *testing.T) {
 	h := start(t, "")
 	names, err := h.client.Names()

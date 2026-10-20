@@ -58,6 +58,26 @@ func TestReadRejectsEmptyValue(t *testing.T) {
 	}
 }
 
+func TestReadRejectsOversizedValue(t *testing.T) {
+	f := fakeop.Setup(t)
+	f.SetValue(strings.Repeat("x", MaxValue+10))
+	_, err := Read(context.Background(), f.Path, "a", "op://x/y/z")
+	var oe *Error
+	if !errors.As(err, &oe) || !strings.Contains(oe.Error(), "larger than") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestReadAcceptsLargeValue(t *testing.T) {
+	f := fakeop.Setup(t)
+	want := strings.Repeat("y", 40<<10)
+	f.SetValue(want)
+	got, err := Read(context.Background(), f.Path, "a", "op://x/y/z")
+	if err != nil || string(got) != want {
+		t.Fatalf("len %d, err %v", len(got), err)
+	}
+}
+
 func TestTrimStderrRedactsValue(t *testing.T) {
 	if got := trimStderr([]byte("oops ghp_123 leaked"), []byte("ghp_123")); strings.Contains(got, "ghp_123") {
 		t.Fatal(got)

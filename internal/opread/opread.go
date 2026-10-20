@@ -31,24 +31,50 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
+// MaxValue is the largest secret Read accepts.
+const MaxValue = 64 << 10
+
 // Read returns the value of ref. The caller owns the returned slice and should
 // zero it once copied.
 func Read(ctx context.Context, opPath, account, ref string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, opPath, "read", "--account", account, "--no-newline", ref)
-	var stdout, stderr bytes.Buffer
-	// Pre-size so the value is never left behind in a discarded smaller buffer.
-	stdout.Grow(16 << 10)
-	cmd.Stdout = &stdout
+	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	err := cmd.Run()
-	out := stdout.Bytes()
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, &Error{Err: err}
+	}
+	// Read straight from the pipe into one fixed buffer, so the value is never
+	// copied through io.Copy's scratch space or a growing bytes.Buffer.
+	buf := make([]byte, MaxValue+1)
+	n := 0
+	for n < len(buf) {
+		m, rerr := pipe.Read(buf[n:])
+		n += m
+		if rerr != nil {
+			break
+		}
+	}
+	tooLarge := n > MaxValue
+	if tooLarge {
+		_ = cmd.Process.Kill()
+	}
+	err = cmd.Wait()
+	out := buf[:n]
 	if ctx.Err() == context.DeadlineExceeded {
-		clear(out)
+		clear(buf)
 		return nil, ErrTimeout
+	}
+	if tooLarge {
+		clear(buf)
+		return nil, &Error{Err: fmt.Errorf("value larger than %d bytes", MaxValue)}
 	}
 	if err != nil {
 		msg := trimStderr(stderr.Bytes(), out)
-		clear(out)
+		clear(buf)
 		return nil, &Error{Err: err, Stderr: msg}
 	}
 	// op prints no newline with --no-newline, but older versions ignored it.

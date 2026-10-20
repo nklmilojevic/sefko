@@ -5,6 +5,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -138,6 +139,16 @@ func Parse(data []byte) (*Config, error) {
 	return &c, nil
 }
 
+// isLoopback reports whether host is localhost or a loopback IP, the only
+// places a validator may send the secret without TLS.
+func isLoopback(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 func (c *Config) check() error {
 	if c.TTL < 0 {
 		return errors.New("ttl must be positive")
@@ -161,8 +172,9 @@ func (c *Config) check() error {
 		}
 		if v := s.Validate; v != nil {
 			u, err := url.Parse(v.URL)
-			if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-				return fmt.Errorf("secret %q: validate.url must be an http(s) URL", name)
+			secure := err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http" && isLoopback(u.Hostname()))
+			if !secure {
+				return fmt.Errorf("secret %q: validate.url must be an https URL (http is allowed only for loopback)", name)
 			}
 			if v.Header == "" {
 				return fmt.Errorf("secret %q: validate.header is required", name)

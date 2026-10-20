@@ -176,6 +176,7 @@ func TestExecUsageErrors(t *testing.T) {
 		"no env default": {"exec", "plain", "--", "true"},
 		"bad override":   {"exec", "--env", "X", "--", "true"},
 		"nothing":        {"exec", "--", "true"},
+		"duplicate env":  {"exec", "github", "--env", "GH_TOKEN=plain", "--", "true"},
 	}
 	for name, args := range cases {
 		if code, _, _ := e.run(args...); code != ExitUsage {
@@ -184,6 +185,25 @@ func TestExecUsageErrors(t *testing.T) {
 	}
 	if code, _, _ := e.run("exec", "nope", "--", "true"); code != ExitNotAllowed {
 		t.Errorf("unknown alias: %d", code)
+	}
+}
+
+func TestExecChecksCommandBeforeFetching(t *testing.T) {
+	e := setup(t, true)
+	if code, _, _ := e.run("exec", "github", "--", "definitely-not-a-command-sefko"); code != ExitError {
+		t.Fatalf("code %d", code)
+	}
+	if calls := e.op.Calls(); len(calls) != 0 {
+		t.Fatalf("fetched secrets for a missing command: %q", calls)
+	}
+}
+
+func TestPrintable(t *testing.T) {
+	if printable("github") != "github" {
+		t.Fatal("plain name changed")
+	}
+	if got := printable("x\x1b[2Jy\nz"); strings.ContainsAny(got, "\x1b\n") {
+		t.Fatalf("control characters survived: %q", got)
 	}
 }
 

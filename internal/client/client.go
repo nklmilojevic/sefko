@@ -47,6 +47,7 @@ func (c *Client) Do(req protocol.Request) (*protocol.Response, error) {
 	}
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
 	if err != nil {
+		clear(line)
 		if len(line) == 0 {
 			return nil, fmt.Errorf("agent closed the connection without answering (refused?): %w", err)
 		}

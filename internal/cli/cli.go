@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
+	"unicode"
 
 	"github.com/spf13/cobra"
 
@@ -274,6 +276,13 @@ func (a *app) bindings(aliases, overrides []string) ([]binding, error) {
 	if len(out) == 0 {
 		return nil, exit(ExitUsage, errors.New("name at least one alias"))
 	}
+	seen := map[string]string{}
+	for _, b := range out {
+		if prev, dup := seen[b.env]; dup {
+			return nil, exit(ExitUsage, fmt.Errorf("%s is bound to both %s and %s", b.env, prev, b.alias))
+		}
+		seen[b.env] = b.alias
+	}
 	return out, nil
 }
 
@@ -299,6 +308,12 @@ func (a *app) execCmd() *cobra.Command {
 			if dash < 0 || dash == len(args) {
 				return exit(ExitUsage, errors.New("missing -- command"))
 			}
+			argv := args[dash:]
+			// Check the command first so a typo doesn't cost a 1Password prompt.
+			path, err := exec.LookPath(argv[0])
+			if err != nil {
+				return exit(ExitError, err)
+			}
 			bs, err := a.bindings(args[:dash], overrides)
 			if err != nil {
 				return err
@@ -306,11 +321,6 @@ func (a *app) execCmd() *cobra.Command {
 			vals, err := a.resolve(bs)
 			if err != nil {
 				return err
-			}
-			argv := args[dash:]
-			path, err := exec.LookPath(argv[0])
-			if err != nil {
-				return exit(ExitError, err)
 			}
 			if err := a.io.Exec(path, argv, mergeEnv(os.Environ(), vals)); err != nil {
 				return exit(ExitError, fmt.Errorf("exec %s: %w", argv[0], err))
@@ -487,9 +497,20 @@ func printStatus(w io.Writer, st *protocol.Status) {
 	tw = tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	for _, ev := range st.Recent {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s[%d]\n",
-			ev.Time.Local().Format("15:04:05"), ev.Op, cmpOr(ev.Name, "-"), ev.Result, cmpOr(ev.Exe, "?"), ev.PID)
+			ev.Time.Local().Format("15:04:05"), printable(ev.Op), printable(cmpOr(ev.Name, "-")), ev.Result, printable(cmpOr(ev.Exe, "?")), ev.PID)
 	}
 	_ = tw.Flush()
+}
+
+// printable quotes s if it contains anything a terminal might interpret.
+// Names in recent requests come from peers and may be hostile.
+func printable(s string) string {
+	for _, r := range s {
+		if !unicode.IsPrint(r) {
+			return strconv.Quote(s)
+		}
+	}
+	return s
 }
 
 func cmpOr(s, fallback string) string {

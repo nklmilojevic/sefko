@@ -63,6 +63,7 @@ func TestInvalid(t *testing.T) {
 		"bad duration":    "ttl = \"forever\"\n",
 		"negative ttl":    "ttl = \"-1h\"\n",
 		"validate url":    "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"ftp://x\"\nheader = \"H\"\n",
+		"validate http":   "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"http://api.github.com/user\"\nheader = \"H\"\n",
 		"validate fmt":    "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"https://x\"\nheader = \"H\"\nformat = \"Bearer\"\n",
 		"no header":       "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"https://x\"\n",
 		"not toml at all": "[[[",
@@ -70,6 +71,15 @@ func TestInvalid(t *testing.T) {
 	for name, in := range cases {
 		if _, err := Parse([]byte(in)); err == nil {
 			t.Errorf("%s: expected error", name)
+		}
+	}
+}
+
+func TestValidateAllowsLoopbackHTTP(t *testing.T) {
+	for _, u := range []string{"http://127.0.0.1:8080/x", "http://localhost/x", "http://[::1]/x"} {
+		in := "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"" + u + "\"\nheader = \"H\"\n"
+		if _, err := Parse([]byte(in)); err != nil {
+			t.Errorf("%s: %v", u, err)
 		}
 	}
 }

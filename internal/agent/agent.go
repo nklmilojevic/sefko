@@ -67,6 +67,9 @@ type Agent struct {
 	started time.Time
 	group   singleflight.Group
 
+	reloadMu sync.Mutex // serializes Reload; held without mu
+	badHash  [32]byte   // last config content that failed to parse
+
 	mu          sync.Mutex
 	cfg         *config.Config
 	cfgHash     [32]byte
@@ -191,6 +194,8 @@ func (a *Agent) Sweep() {
 // Reload re-reads the config file. An invalid file is logged and ignored.
 // Entries whose ref or account changed, or that were removed, are wiped.
 func (a *Agent) Reload() error {
+	a.reloadMu.Lock()
+	defer a.reloadMu.Unlock()
 	data, err := os.ReadFile(a.opts.ConfigPath)
 	if err != nil {
 		a.opts.Log.Error("config reload: " + err.Error())
@@ -205,7 +210,10 @@ func (a *Agent) Reload() error {
 	}
 	cfg, err := config.Parse(data)
 	if err != nil {
-		a.opts.Log.Error(fmt.Sprintf("config reload: %v; keeping the previous config", err))
+		if sum != a.badHash {
+			a.badHash = sum
+			a.opts.Log.Error(fmt.Sprintf("config reload: %v; keeping the previous config", err))
+		}
 		return err
 	}
 	a.mu.Lock()
@@ -439,7 +447,7 @@ func (a *Agent) audit(ev protocol.Event) {
 		a.recent = a.recent[len(a.recent)-recentSize:]
 	}
 	a.mu.Unlock()
-	a.opts.Log.Audit(fmt.Sprintf("op=%s name=%s pid=%d exe=%q result=%s latency_ms=%d detail=%q",
+	a.opts.Log.Audit(fmt.Sprintf("op=%q name=%q pid=%d exe=%q result=%s latency_ms=%d detail=%q",
 		ev.Op, ev.Name, ev.PID, ev.Exe, ev.Result, ev.LatencyMS, ev.Detail))
 }
 
