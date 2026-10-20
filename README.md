@@ -224,7 +224,7 @@ The wrapper does these steps:
 4. If the token was not valid, sefko reads a new token.
    If standard input is a terminal, the wrapper runs `gh` again one time.
    If not, it tells you to run the command again.
-   The wrapper does not run the command again in this condition, because the first command possibly read all of standard input.
+   The first command possibly read all of standard input.
 
 ## Logs
 
