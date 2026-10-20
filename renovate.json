@@ -18,7 +18,7 @@
   },
   "packageRules": [
     {
-      "description": "package.nix pins vendorHash, which Renovate cannot recompute. One weekly PR, merged by hand after updating the hash.",
+      "description": "Go updates land as one weekly PR. The vendor-hash workflow fixes vendorHash in package.nix on it.",
       "matchManagers": [
         "gomod"
       ],

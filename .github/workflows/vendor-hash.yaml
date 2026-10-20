@@ -1,0 +1,17 @@
+name: Vendor hash
+
+on:
+  pull_request:
+    branches: [main]
+    paths: [go.mod, go.sum]
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-hash:
+    if: startsWith(github.head_ref, 'renovate/') && github.event.pull_request.head.repo.full_name == github.repository
+    uses: nklmilojevic/renovate-config/.github/workflows/go-vendor-hash.yaml@c35a571a002bf689e5b0b77ae3daeb739fd51c03 # main
+    secrets:
+      app-id: ${{ secrets.BOT_APP_ID }}
+      app-private-key: ${{ secrets.BOT_APP_PRIVATE_KEY }}
