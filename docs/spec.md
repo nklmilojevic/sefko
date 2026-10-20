@@ -197,7 +197,8 @@ message, and nothing is cached.
 ## 10. nix-darwin / Home Manager integration
 
 The flake (`github:nklmilojevic/sefko`) exposes:
-- `packages.<darwin>.gh`: gh wrapped with `nix/gh-wrapper.sh` (§11), so nix-config can use it instead of maintaining its own copy
+- `packages.<darwin>.gh`: gh wrapped with `sefko wrap github` (§11), so nix-config can use it instead of maintaining its own copy
+- `lib.mkWrapper pkgs { package, secret, … }` and the Home Manager option `programs.sefko.wrappers`: the same wrapper for any CLI that reads its token from a variable
 - `packages.aarch64-darwin.default` (`buildGoModule` with cgo, `CGO_ENABLED=1`, frameworks `IOKit` and `CoreFoundation`)
 - `homeManagerModules.default`
 - `devShells.default`: go, gopls, golangci-lint, just, gotestsum. Never mise.
@@ -233,29 +234,14 @@ The module:
 
 1. **Flake input:** `sefko.url = "github:nklmilojevic/sefko";` and import `sefko.homeManagerModules.default` in the Darwin Home Manager config, with the `programs.sefko` block above.
 
-2. **`gh` wrapper** (`modules/shared/packages/core.nix`, `gh-1password`). Either replace `gh-1password` with `inputs.sefko.packages.${system}.gh`, or keep it and replace the `op read` line with the same logic:
+2. **`gh` wrapper** (`modules/shared/packages/core.nix`, `gh-1password`). Either replace `gh-1password` with `inputs.sefko.packages.${system}.gh`, or keep it and make its body:
 
    ```sh
    #!/bin/sh
-   if [ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ]; then
-     exec gh "$@"                       # token came from elsewhere; don't touch it
-   fi
-   GH_TOKEN=$(sefko get github) || exit 1   # sefko falls back to op read itself
-   export GH_TOKEN
-   gh "$@"; rc=$?
-   [ "$rc" -eq 0 ] && exit 0
-   sefko validate github >/dev/null 2>&1
-   if [ $? -eq 10 ]; then
-     if [ -t 0 ]; then
-       GH_TOKEN=$(sefko get github) || exit "$rc"
-       exec gh "$@"                     # retry once with the fresh token
-     fi
-     echo "sefko: GitHub token was invalid and has been refreshed; re-run the command" >&2
-   fi
-   exit "$rc"
+   exec sefko wrap github --bypass GITHUB_TOKEN -- gh "$@"
    ```
 
-   The retry happens only when stdin is a terminal, because piped stdin (`gh api --input -`) was already consumed by the first attempt. A 401 means the first attempt changed nothing on GitHub, so retrying is safe.
+   `sefko wrap` runs gh directly when `GH_TOKEN` or `GITHUB_TOKEN` is already set. Otherwise it runs gh with the token, and on failure runs `validate`; after a 401 it retries once, but only when stdin is a terminal, because piped stdin (`gh api --input -`) was already consumed by the first attempt. A 401 means the first attempt changed nothing on GitHub, so retrying is safe.
 
    The wrapper depends on the sefko package by absolute store path, like it does on `gh` today, rather than on `$PATH`.
 
@@ -287,7 +273,7 @@ No real 1Password and no real GitHub in any automated test.
 - **Socket safety:** refuses a dir with mode 0755 or a foreign owner; stale socket replaced; a live agent detected.
 - **Client:** `get` falls back to fake op when no agent is listening; `exec` env mapping and overrides; `env` quoting for fish (values containing `'` and `\`).
 - **Memory:** wipe zeroes the locked buffer (read back through an unsafe test hook).
-- **Wrapper script:** a bats-free Go test runs the wrapper with fake `gh` and fake `sefko` executables to cover the success, 401→refresh→retry, non-TTY no-retry and env-preset paths.
+- **Wrapper:** `sefko wrap` tests run a fake tool against an agent with a loopback validator to cover the success, 401→refresh→retry, non-TTY no-retry, `--no-retry`, signal, agent-down and env-preset paths.
 - **Nix:** `nix flake check` builds the package, runs `go test ./...`, and evaluates the HM module with a sample config (rendered TOML matches a golden file).
 - `just test`, `just lint`, `just build`, `just check` (flake check).
 

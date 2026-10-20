@@ -54,7 +54,9 @@ To find unexpected requests, examine the audit log (see [Logs](#logs)).
 
 ## Install
 
-Use Nix with Home Manager.
+Use Nix with Home Manager, or use Homebrew.
+
+### Install with Nix
 
 1. Add the flake input:
 
@@ -103,6 +105,48 @@ Use Nix with Home Manager.
 > **Note:** Nix does not see files that are not in Git.
 > If you add a new module file, run `git add` on it before you apply the configuration.
 
+### Install with Homebrew
+
+1. Install sefko:
+
+   ```fish
+   brew install --cask nklmilojevic/sefko/sefko
+   ```
+
+   You can also download a binary from the [releases](https://github.com/nklmilojevic/sefko/releases).
+
+2. Write the configuration in `~/.config/sefko/config.toml`:
+
+   ```toml
+   [secrets.github]
+   ref = "op://Private/GitHub Personal Access Token/token"
+   account = "my.1password.eu"
+   env = "GH_TOKEN"
+
+   [secrets.github.validate]
+   url = "https://api.github.com/user"
+   header = "Authorization"
+   format = "Bearer {}"
+   ```
+
+   The agent finds `op` in `/opt/homebrew/bin`, `/usr/local/bin`, and the system directories.
+   If `op` is in a different directory, set `op_path = "/path/to/op"` at the top of the file.
+
+3. Start the agent:
+
+   ```fish
+   sefko service install
+   ```
+
+   This command writes `~/Library/LaunchAgents/io.nkl.sefko.plist` and starts the agent.
+   To stop the agent and remove the file, run `sefko service uninstall`.
+
+4. Make sure that the agent runs:
+
+   ```fish
+   launchctl print gui/(id -u)/io.nkl.sefko | grep state
+   ```
+
 ### Options
 
 | Option | Default | Description |
@@ -116,6 +160,12 @@ Use Nix with Home Manager.
 | `secrets.<alias>.account` | (required) | The 1Password account. |
 | `secrets.<alias>.env` | `null` | The default variable name for `sefko exec` and `sefko env`. |
 | `secrets.<alias>.validate` | `null` | An HTTP check for the secret. See [Validate a secret](#validate-a-secret). |
+| `wrappers.<program>.package` | (required) | The package that has the program. See [Wrap a command](#wrap-a-command). |
+| `wrappers.<program>.secret` | (required) | The alias of the token. |
+| `wrappers.<program>.program` | `<program>` | The program in the `bin` directory of the package. |
+| `wrappers.<program>.var` | `null` | The variable for the token. If it is `null`, the wrapper uses the `env` of the secret. |
+| `wrappers.<program>.bypassEnv` | `[ ]` | More variables. If one of them is set, the wrapper does not use sefko. |
+| `wrappers.<program>.retry` | `true` | Runs the program again after sefko reads a new token. |
 
 The module writes the configuration to `~/.config/sefko/config.toml`.
 This file contains only references, not values.
@@ -129,11 +179,14 @@ It keeps the values that did not change.
 | `sefko get <alias>` | Writes the value to standard output, with no newline at the end. |
 | `sefko exec <alias>... -- <command>` | Starts the command with the secrets in its environment. |
 | `sefko env <alias>...` | Writes `set -gx` commands for fish. Use `--shell posix` for `export` commands. |
+| `sefko wrap <alias> -- <command>` | Starts the command with the secret. If the token is not valid, it reads a new token. See [Wrap a command](#wrap-a-command). |
 | `sefko refresh <alias>` | Removes the value and reads it again from 1Password. |
 | `sefko validate <alias>` | Does the HTTP check. If the service rejects the value, it reads the value again. |
 | `sefko lock` | Removes all values. |
 | `sefko status` | Shows the agent, the values in memory, and the last 50 requests. Use `--json` for JSON output. |
 | `sefko agent` | Starts the agent. launchd uses this command. |
+| `sefko service install` | Writes a launchd agent and starts it. Use it only without the Home Manager module. |
+| `sefko service uninstall` | Stops the launchd agent and removes it. |
 
 ### Examples
 
@@ -208,23 +261,66 @@ The agent does the check a maximum of one time each minute for each alias.
 The URL must use HTTPS.
 Plain HTTP is permitted only for `localhost`.
 
-## The gh wrapper
+## Wrap a command
 
-The flake supplies a `gh` package that gets its token from sefko:
+`sefko wrap` makes a command get its token from sefko each time that it starts:
+
+```fish
+sefko wrap github --bypass GITHUB_TOKEN -- gh pr list
+```
+
+The wrapper does these steps:
+
+1. If the variable of the token is set, it runs the command with that value.
+   The variable is the `env` of the secret, or the `--var` value.
+   The variables that you give with `--bypass` have the same effect.
+2. If not, it gets the token from sefko and runs the command.
+3. If the command fails, it runs `sefko validate` on the alias.
+4. If the token was not valid, sefko reads a new token.
+   If standard input is a terminal, the wrapper runs the command again one time.
+   If not, it tells you to run the command again.
+   The first command possibly read all of standard input.
+
+The wrapper gives the exit code of the command.
+If the command can be dangerous to run two times, use `--no-retry`.
+The wrapper works only for tools that read the token from a variable.
+
+### Wrap a command with Home Manager
+
+The module can install wrapped programs:
+
+```nix
+programs.sefko.wrappers = {
+  gh = { package = pkgs.gh; secret = "github"; bypassEnv = [ "GITHUB_TOKEN" ]; };
+  glab = { package = pkgs.glab; secret = "gitlab"; };
+};
+```
+
+Each wrapper has the full package, with the man pages and the completions.
+It has a higher priority than the same package without the wrapper.
+The secret must be in `programs.sefko.secrets`.
+
+Without the module, use the flake function:
+
+```nix
+inputs.sefko.lib.mkWrapper pkgs { package = pkgs.glab; secret = "gitlab"; }
+```
+
+The flake also supplies a `gh` package that is wrapped with the `github` secret:
 
 ```nix
 home.packages = [ inputs.sefko.packages.${pkgs.stdenv.hostPlatform.system}.gh ];
 ```
 
-The wrapper does these steps:
+### Wrap a command without Nix
 
-1. If `GH_TOKEN` or `GITHUB_TOKEN` is set, it runs `gh` with that token.
-2. If not, it gets the token with `sefko get github` and runs `gh`.
-3. If `gh` fails, it runs `sefko validate github`.
-4. If the token was not valid, sefko reads a new token.
-   If standard input is a terminal, the wrapper runs `gh` again one time.
-   If not, it tells you to run the command again.
-   The first command possibly read all of standard input.
+Put a script with the name of the program before the real program in `PATH`.
+For example, `~/.local/bin/gh`:
+
+```sh
+#!/bin/sh
+exec sefko wrap github --bypass GITHUB_TOKEN -- /opt/homebrew/bin/gh "$@"
+```
 
 ## Logs
 
@@ -266,6 +362,13 @@ just            # show the tasks
 just check      # lint, tidy check, and tests
 just nix-check  # build the package and examine the Home Manager module
 ```
+
+### Release
+
+Run `vesnik release`.
+vesnik makes the tag and the GitHub release.
+Then the release workflow attaches the macOS binaries and updates the Homebrew cask in `nklmilojevic/homebrew-sefko`.
+The workflow does not use Nix, because binaries from the Nix toolchain link to files in `/nix/store`.
 
 The tests do not use real 1Password.
 The test binary operates as a fake `op` command.

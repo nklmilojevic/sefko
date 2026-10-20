@@ -15,8 +15,6 @@ buildGoModule {
       ./go.sum
       ./cmd
       ./internal
-      # The wrapper tests read the script template.
-      ./nix/gh-wrapper.sh
     ];
   };
 

@@ -8,10 +8,9 @@ default:
 # Lint, tidy-check and test: what CI runs.
 check: lint tidy-check test
 
-# Run golangci-lint and shellcheck.
+# Run golangci-lint.
 lint:
     golangci-lint run
-    shellcheck nix/gh-wrapper.sh
 
 # Format Go and Nix code in place.
 fmt:
@@ -39,3 +38,7 @@ run-agent config="~/.config/sefko/config.toml":
 # Build the Nix packages, run their tests and check the Home Manager module.
 nix-check:
     nix flake check --print-build-logs
+
+# Validate the GoReleaser configuration. Releases run in CI with `vesnik release`.
+release-check:
+    goreleaser check

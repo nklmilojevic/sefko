@@ -27,3 +27,6 @@ func disableCoreDumps() error {
 }
 
 func denyAttach() error { return nil }
+
+// IsTerminal reports false, so callers take their non-interactive path.
+func IsTerminal(int) bool { return false }

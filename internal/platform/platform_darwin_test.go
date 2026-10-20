@@ -79,3 +79,14 @@ func TestLoggerDoesNotCrash(t *testing.T) {
 	l.Info("test info")
 	l.Error("test error")
 }
+
+func TestIsTerminal(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Close(); _ = w.Close() }()
+	if IsTerminal(int(r.Fd())) {
+		t.Fatal("a pipe is not a terminal")
+	}
+}
