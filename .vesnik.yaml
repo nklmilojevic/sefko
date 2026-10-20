@@ -1,0 +1,7 @@
+provider: claude
+model: claude-haiku-5-5
+
+style:
+  product: "keeps 1Password secrets in memory and gives them to your tools without a new prompt each time"
+
+breaking_bumps_minor: true
