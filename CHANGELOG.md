@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.1 - 2026-10-20
+
+This release does not change how sefko works. It changes how this repository gets dependency updates.
+
+### Other changes
+
+- Renovate now runs on this repository. Renovate opens dependency update pull requests for the project.
+- Renovate Go pull requests now update the `vendorHash` in `package.nix` automatically. Before, the Nix build failed until a maintainer fixed the hash by hand.
+
 ## v0.1.0 - 2026-10-20
 
 This release lets any CLI use a sefko secret. It also adds macOS binaries and a Homebrew cask.
