@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "local>nklmilojevic/renovate-config",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "postUpdateOptions": [
+    "gomodTidy"
+  ],
+  "nix": {
+    "enabled": true
+  },
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on monday"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "package.nix pins vendorHash, which Renovate cannot recompute. One weekly PR, merged by hand after updating the hash.",
+      "matchManagers": [
+        "gomod"
+      ],
+      "groupName": "Go modules",
+      "schedule": [
+        "before 6am on monday"
+      ],
+      "automerge": false
+    }
+  ]
+}
