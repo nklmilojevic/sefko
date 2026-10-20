@@ -42,7 +42,7 @@ let
 in
 assert pkgs.lib.assertMsg (args == expectedArgs) "unexpected ProgramArguments: ${builtins.toJSON args}";
 assert pkgs.lib.assertMsg cfg.launchd.agents.sefko.enable "launchd agent not enabled";
-assert pkgs.lib.assertMsg (cfg.home.activation ? sefkoReload) "missing reload activation";
+assert pkgs.lib.assertMsg (!(cfg.home.activation ? sefkoReload)) "activation must not signal the agent";
 pkgs.runCommand "sefko-hm-module-check" { nativeBuildInputs = [ pkgs.diffutils ]; } ''
   grep -q '^op_path = "/nix/store/.*/bin/op"$' ${cfg.xdg.configFile."sefko/config.toml".source}
   grep -v '^op_path' ${cfg.xdg.configFile."sefko/config.toml".source} > got.toml

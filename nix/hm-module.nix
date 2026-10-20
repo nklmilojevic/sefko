@@ -10,7 +10,6 @@ let
 
   cfg = config.programs.sefko;
   toml = pkgs.formats.toml { };
-  label = "org.nix-community.home.sefko";
   configPath = "${config.xdg.configHome}/sefko/config.toml";
   socketPath = "${config.home.homeDirectory}/.local/state/sefko/agent.sock";
 
@@ -129,10 +128,9 @@ in
       };
     };
 
-    # The plist only changes with the binary, so a config-only switch keeps the
-    # agent (and its cache) running; tell it to re-read the config.
-    home.activation.sefkoReload = lib.hm.dag.entryAfter [ "setupLaunchAgents" ] ''
-      run /bin/launchctl kill HUP "gui/$(/usr/bin/id -u)/${label}" 2>/dev/null || true
-    '';
+    # No reload hook on activation: the plist only changes with the binary, so a
+    # config-only switch keeps the agent and its cache, and the agent re-reads
+    # the config file on its own within seconds. A SIGHUP sent here could also
+    # reach an agent launchd has only just started, before it handles signals.
   };
 }

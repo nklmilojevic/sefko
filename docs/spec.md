@@ -227,7 +227,7 @@ The module:
 - writes `xdg.configFile."sefko/config.toml"`
 - defines `launchd.agents.sefko` with `ProgramArguments = [ "${pkg}/bin/sefko" "agent" "--config" <config> "--socket" ~/.local/state/sefko/agent.sock ]` (explicit paths, because launchd's environment differs from the shell's), `RunAtLoad`, `KeepAlive.SuccessfulExit = false`, `ProcessType = "Interactive"` and no `StandardOutPath` (logging goes to `os_log`)
 - adds the package to `home.packages`
-- sends SIGHUP on activation when only the config changed (via `launchctl kill HUP gui/$UID/org.nix-community.home.sefko`), so a config-only `darwin-rebuild switch` keeps the cache. A binary change restarts the agent, which costs one prompt.
+- does not signal the agent on activation. The plist only changes with the binary, so a config-only `darwin-rebuild switch` keeps the agent and its cache, and the agent picks up the new config through its 2 s file poll. (An activation-time SIGHUP was tried and removed: it could reach an agent launchd had only just started and kill it.) A binary change restarts the agent, which costs one prompt.
 
 ## 11. Changes to nix-config (described, not applied here)
 
