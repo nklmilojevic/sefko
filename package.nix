@@ -1,5 +1,7 @@
 { lib
+, stdenv
 , buildGoModule
+, installShellFiles
 , version
 ,
 }:
@@ -27,6 +29,15 @@ buildGoModule {
     "-w"
     "-X main.version=${version}"
   ];
+
+  nativeBuildInputs = [ installShellFiles ];
+
+  postInstall = lib.optionalString (stdenv.buildPlatform.canExecute stdenv.hostPlatform) ''
+    installShellCompletion --cmd sefko \
+      --bash <($out/bin/sefko completion bash) \
+      --fish <($out/bin/sefko completion fish) \
+      --zsh <($out/bin/sefko completion zsh)
+  '';
 
   meta = {
     description = "Per-user agent that keeps allowlisted 1Password secrets in memory and serves them over a Unix socket";
