@@ -99,30 +99,20 @@ func DefaultPath() string {
 	return filepath.Join(base, "sefko", "config.toml")
 }
 
+// Load reads the config file and the trusted projects, skipping invalid projects.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	f, err := ReadFiles(path)
 	if err != nil {
 		return nil, err
 	}
-	c, err := Parse(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
-	}
-	return c, nil
+	c, _, err := f.Parse()
+	return c, err
 }
 
 func Parse(data []byte) (*Config, error) {
 	var c Config
-	md, err := toml.Decode(string(data), &c)
-	if err != nil {
+	if err := decodeStrict(data, &c); err != nil {
 		return nil, err
-	}
-	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		keys := make([]string, len(undecoded))
-		for i, k := range undecoded {
-			keys[i] = k.String()
-		}
-		return nil, fmt.Errorf("unknown keys: %s", strings.Join(keys, ", "))
 	}
 	if c.OpPath == "" {
 		c.OpPath = "op"
@@ -137,6 +127,22 @@ func Parse(data []byte) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// decodeStrict decodes TOML into v and rejects keys that v has no field for.
+func decodeStrict(data []byte, v any) error {
+	md, err := toml.Decode(string(data), v)
+	if err != nil {
+		return err
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		keys := make([]string, len(undecoded))
+		for i, k := range undecoded {
+			keys[i] = k.String()
+		}
+		return fmt.Errorf("unknown keys: %s", strings.Join(keys, ", "))
+	}
+	return nil
 }
 
 // isLoopback reports whether host is localhost or a loopback IP, the only
@@ -157,34 +163,40 @@ func (c *Config) check() error {
 		return errors.New("fetch_timeout must be positive")
 	}
 	for _, name := range c.Names() {
-		s := c.Secrets[name]
-		if !aliasRe.MatchString(name) {
-			return fmt.Errorf("secret %q: alias must match %s", name, aliasRe)
+		if err := checkSecret(name, c.Secrets[name]); err != nil {
+			return err
 		}
-		if !strings.HasPrefix(s.Ref, "op://") {
-			return fmt.Errorf("secret %q: ref must start with op://", name)
+	}
+	return nil
+}
+
+func checkSecret(name string, s Secret) error {
+	if !aliasRe.MatchString(name) {
+		return fmt.Errorf("secret %q: alias must match %s", name, aliasRe)
+	}
+	if !strings.HasPrefix(s.Ref, "op://") {
+		return fmt.Errorf("secret %q: ref must start with op://", name)
+	}
+	if s.Account == "" {
+		return fmt.Errorf("secret %q: account is required", name)
+	}
+	if s.Env != "" && !envRe.MatchString(s.Env) {
+		return fmt.Errorf("secret %q: env %q is not a valid variable name", name, s.Env)
+	}
+	if v := s.Validate; v != nil {
+		u, err := url.Parse(v.URL)
+		secure := err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http" && isLoopback(u.Hostname()))
+		if !secure {
+			return fmt.Errorf("secret %q: validate.url must be an https URL (http is allowed only for loopback)", name)
 		}
-		if s.Account == "" {
-			return fmt.Errorf("secret %q: account is required", name)
+		if v.Header == "" {
+			return fmt.Errorf("secret %q: validate.header is required", name)
 		}
-		if s.Env != "" && !envRe.MatchString(s.Env) {
-			return fmt.Errorf("secret %q: env %q is not a valid variable name", name, s.Env)
+		if v.Format == "" {
+			v.Format = valuePlaceholder
 		}
-		if v := s.Validate; v != nil {
-			u, err := url.Parse(v.URL)
-			secure := err == nil && u.Host != "" && (u.Scheme == "https" || u.Scheme == "http" && isLoopback(u.Hostname()))
-			if !secure {
-				return fmt.Errorf("secret %q: validate.url must be an https URL (http is allowed only for loopback)", name)
-			}
-			if v.Header == "" {
-				return fmt.Errorf("secret %q: validate.header is required", name)
-			}
-			if v.Format == "" {
-				v.Format = valuePlaceholder
-			}
-			if !strings.Contains(v.Format, valuePlaceholder) {
-				return fmt.Errorf("secret %q: validate.format must contain {}", name)
-			}
+		if !strings.Contains(v.Format, valuePlaceholder) {
+			return fmt.Errorf("secret %q: validate.format must contain {}", name)
 		}
 	}
 	return nil

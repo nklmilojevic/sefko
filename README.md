@@ -36,8 +36,10 @@ It does not write secrets to logs or to the `status` output.
 - **Other users.** The socket is in a directory that only you can open.
   The agent examines the user ID of each connection.
   It closes connections from all other users.
-- **Other vault items.** The agent reads only the aliases in its configuration.
+- **Other vault items.** The agent reads only the aliases in its configuration and in the projects that you trust.
   A process cannot use sefko to read other items from your vault.
+- **Changes to a project file.** The agent reads only the copy of `.sefko.toml` that you trusted.
+  If the file in the repository changes, nothing changes until you trust it again.
 - **Old values after sleep.** The agent removes all values before the Mac goes to sleep.
 
 ### What sefko does not protect
@@ -184,6 +186,8 @@ It keeps the values that did not change.
 | `sefko validate <alias>` | Does the HTTP check. If the service rejects the value, it reads the value again. |
 | `sefko lock` | Removes all values. |
 | `sefko status` | Shows the agent, the values in memory, and the last 50 requests. Use `--json` for JSON output. |
+| `sefko trust [file]` | Adds the secrets of a project file to the allowlist. See [Share secrets with a project](#share-secrets-with-a-project). |
+| `sefko untrust [project]` | Removes the secrets of a project from the allowlist and from memory. |
 | `sefko agent` | Starts the agent. launchd uses this command. |
 | `sefko service install` | Writes a launchd agent and starts it. Use it only without the Home Manager module. |
 | `sefko service uninstall` | Stops the launchd agent and removes it. |
@@ -322,6 +326,66 @@ For example, `~/.local/bin/gh`:
 exec sefko wrap github --bypass GITHUB_TOKEN -- /opt/homebrew/bin/gh "$@"
 ```
 
+## Share secrets with a project
+
+A repository can list the secrets that its tools need in a `.sefko.toml` file:
+
+```toml
+project = "acme"
+account = "team.1password.com"   # default for each secret
+
+[secrets.app-key]
+ref = "op://Dev/App/APP_KEY"
+env = "APP_KEY"
+
+[secrets.github-token]
+ref = "op://Dev/GitHub token/token"
+env = "GITHUB_TOKEN"
+
+[secrets.github-token.validate]
+url = "https://api.github.com/user"
+header = "Authorization"
+format = "Bearer {}"
+```
+
+The file can contain only `project`, `account` and `secrets`.
+Each secret has the same keys as in `config.toml`.
+
+1. Read the file, then trust it:
+
+   ```fish
+   sefko trust
+   ```
+
+   sefko finds the nearest `.sefko.toml` in the current directory or a parent directory.
+   It copies the file to `~/.config/sefko/projects/<project>.toml` and shows the secrets that it added.
+
+2. Start a command with all the secrets of the project:
+
+   ```fish
+   sefko exec --project -- just up
+   ```
+
+   `--project` adds each secret that has an `env` value.
+   It also works with `sefko env`.
+
+The name of a project secret is `<project>/<alias>`, for example `sefko get acme/app-key`.
+A project cannot replace one of your own aliases, because your aliases cannot contain `/`.
+
+If the file in the repository changes, `exec --project` stops with exit code 3.
+Read the change, then run `sefko trust` again.
+`sefko trust --check` gives exit code 0 only if the file is trusted and did not change.
+A script can use it to decide whether to use sefko:
+
+```sh
+if command -v sefko >/dev/null && sefko trust --check 2>/dev/null; then
+  exec sefko exec --project -- varlock run -- "$@"
+fi
+exec varlock run -- "$@"
+```
+
+To remove the secrets of a project, run `sefko untrust`.
+
 ## Logs
 
 The agent writes to the macOS unified log, subsystem `io.nkl.sefko`.
@@ -348,7 +412,7 @@ log show --last 1h --info --predicate 'subsystem == "io.nkl.sefko"'
 | The agent stops immediately | Run `sefko agent --log-stderr` in a terminal and read the error. |
 | `... has mode 755; it must be 0700` | Run `chmod 700 ~/.local/state/sefko`. |
 | `another sefko agent is already running` | Stop the other agent. Only one agent can use the socket. |
-| `not_allowed` | Add the alias to `programs.sefko.secrets` and apply the configuration. |
+| `not_allowed` | Add the alias to `programs.sefko.secrets` and apply the configuration. For a project secret, run `sefko trust`. |
 | `op_timeout` | Approve the 1Password dialog in less than `fetchTimeout`. Make sure that 1Password is open. |
 | `gh` says `Bad credentials` | Run `sefko refresh github`. |
 

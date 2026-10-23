@@ -123,6 +123,8 @@ func (a *app) root(version string) *cobra.Command {
 		a.validateCmd(),
 		a.lockCmd(),
 		a.statusCmd(),
+		a.trustCmd(),
+		a.untrustCmd(),
 		a.serviceCmd(),
 	)
 	return root
@@ -259,9 +261,9 @@ func (a *app) envNames() (map[string]string, error) {
 
 type binding struct{ env, alias string }
 
-// bindings resolves positional aliases (using their default env names) and
-// --env NAME=alias overrides.
-func (a *app) bindings(aliases, overrides []string) ([]binding, error) {
+// bindings resolves positional aliases (using their default env names),
+// --env NAME=alias overrides and, with project, the nearest project file.
+func (a *app) bindings(aliases, overrides []string, project bool) ([]binding, error) {
 	var out []binding
 	for _, o := range overrides {
 		env, alias, ok := strings.Cut(o, "=")
@@ -269,6 +271,13 @@ func (a *app) bindings(aliases, overrides []string) ([]binding, error) {
 			return nil, exit(ExitUsage, fmt.Errorf("--env %q: want NAME=alias", o))
 		}
 		out = append(out, binding{env, alias})
+	}
+	if project {
+		bs, err := a.projectBindings()
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bs...)
 	}
 	if len(aliases) > 0 {
 		names, err := a.envNames()
@@ -313,8 +322,9 @@ func (a *app) resolve(bs []binding) (map[string]string, error) {
 
 func (a *app) execCmd() *cobra.Command {
 	var overrides []string
+	var project bool
 	cmd := &cobra.Command{
-		Use:   "exec [alias...] [--env NAME=alias]... -- command [args...]",
+		Use:   "exec [alias...] [--env NAME=alias]... [--project] -- command [args...]",
 		Short: "Run a command with secrets in its environment",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dash := cmd.ArgsLenAtDash()
@@ -327,7 +337,7 @@ func (a *app) execCmd() *cobra.Command {
 			if err != nil {
 				return exit(ExitError, err)
 			}
-			bs, err := a.bindings(args[:dash], overrides)
+			bs, err := a.bindings(args[:dash], overrides, project)
 			if err != nil {
 				return err
 			}
@@ -339,6 +349,7 @@ func (a *app) execCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&overrides, "env", nil, "set NAME to the value of alias (repeatable)")
+	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+config.ProjectFile)
 	return cmd
 }
 
@@ -359,14 +370,15 @@ func mergeEnv(env []string, vals map[string]string) []string {
 func (a *app) envCmd() *cobra.Command {
 	var shell string
 	var overrides []string
+	var project bool
 	cmd := &cobra.Command{
-		Use:   "env <alias>...",
+		Use:   "env [alias...] [--project]",
 		Short: "Print shell commands that export secrets",
 		RunE: func(_ *cobra.Command, args []string) error {
 			if shell != "fish" && shell != "posix" {
 				return exit(ExitUsage, fmt.Errorf("--shell must be fish or posix, not %q", shell))
 			}
-			bs, err := a.bindings(args, overrides)
+			bs, err := a.bindings(args, overrides, project)
 			if err != nil {
 				return err
 			}
@@ -390,6 +402,7 @@ func (a *app) envCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&shell, "shell", "fish", "fish or posix")
 	cmd.Flags().StringArrayVar(&overrides, "env", nil, "export NAME with the value of alias (repeatable)")
+	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+config.ProjectFile)
 	return cmd
 }
 

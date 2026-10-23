@@ -220,6 +220,14 @@ func (a *Agent) serveConn(c *net.UnixConn) {
 	case protocol.OpStatus:
 		ev.Result = "ok"
 		a.reply(c, &protocol.Response{OK: true, Status: a.status()})
+	case protocol.OpReload:
+		if err := a.Reload(); err != nil {
+			ev.Result, ev.Detail = resultError, err.Error()
+			a.reply(c, failure(protocol.CodeConfig, err.Error()))
+			return
+		}
+		ev.Result = "ok"
+		a.reply(c, &protocol.Response{OK: true})
 	case protocol.OpNames:
 		ev.Result = "ok"
 		a.reply(c, &protocol.Response{OK: true, Names: a.names()})
