@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/nklmilojevic/sefko/internal/client"
+	"github.com/nklmilojevic/sefko/internal/config"
 	"github.com/nklmilojevic/sefko/internal/fakeop"
 	"github.com/nklmilojevic/sefko/internal/platform"
 	"github.com/nklmilojevic/sefko/internal/protocol"
@@ -403,6 +404,49 @@ func TestReload(t *testing.T) {
 	}
 	if n := len(h.op.Calls()); n != 3 {
 		t.Fatalf("calls: %d", n)
+	}
+}
+
+func TestTrustedProject(t *testing.T) {
+	h := start(t, "")
+	trusted := config.TrustedPath(h.cfg, "acme")
+	if err := os.MkdirAll(filepath.Dir(trusted), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := "project = \"acme\"\naccount = \"team.example\"\n[secrets.app-key]\nref = \"op://Dev/App/APP_KEY\"\nenv = \"APP_KEY\"\n"
+	if err := os.WriteFile(trusted, []byte(project), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if v := h.get("acme/app-key"); v != "value-of:op://Dev/App/APP_KEY" {
+		t.Fatalf("value: %q", v)
+	}
+	if calls := h.op.Calls(); len(calls) != 1 || !strings.HasPrefix(calls[0], "team.example ") {
+		t.Fatalf("calls: %q", calls)
+	}
+	h.get("github")
+
+	if err := os.Remove(trusted); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.client.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.client.Get("acme/app-key"); codeOf(err) != protocol.CodeNotAllowed {
+		t.Fatalf("untrusted secret still served: %v", err)
+	}
+	if !h.entry("github").Cached {
+		t.Fatal("untrusting a project wiped the user's own secrets")
+	}
+}
+
+func TestReloadRequestReportsInvalidConfig(t *testing.T) {
+	h := start(t, "")
+	h.writeConfig("not [ toml")
+	if err := h.client.Reload(); codeOf(err) != protocol.CodeConfig {
+		t.Fatalf("got %v", err)
 	}
 }
 

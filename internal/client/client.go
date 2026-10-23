@@ -109,3 +109,8 @@ func (c *Client) Names() ([]protocol.Name, error) {
 	}
 	return r.Names, nil
 }
+
+func (c *Client) Reload() error {
+	_, err := c.Do(protocol.Request{Op: protocol.OpReload})
+	return err
+}

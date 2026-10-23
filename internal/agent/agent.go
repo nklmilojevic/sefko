@@ -4,7 +4,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -103,24 +102,32 @@ func New(opts Options) (*Agent, error) {
 	opts.ReloadInterval = cmpOr(opts.ReloadInterval, 2*time.Second)
 	opts.ValidateEvery = cmpOr(opts.ValidateEvery, time.Minute)
 
-	data, err := os.ReadFile(opts.ConfigPath)
+	files, err := config.ReadFiles(opts.ConfigPath)
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.Parse(data)
+	cfg, warnings, err := files.Parse()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", opts.ConfigPath, err)
+		return nil, err
 	}
+	logWarnings(opts.Log, warnings)
 	return &Agent{
 		opts:        opts,
 		uid:         os.Getuid(),
 		started:     opts.Now(),
 		cfg:         cfg,
-		cfgHash:     sha256.Sum256(data),
+		cfgHash:     files.Sum,
 		entries:     map[string]*entry{},
 		epoch:       map[string]uint64{},
 		validations: map[string]validation{},
 	}, nil
+}
+
+// logWarnings reports trusted projects that were skipped.
+func logWarnings(log platform.Logger, warnings []error) {
+	for _, w := range warnings {
+		log.Error("skipped project: " + w.Error())
+	}
 }
 
 func cmpOr[T comparable](v, fallback T) T {
@@ -191,24 +198,25 @@ func (a *Agent) Sweep() {
 	}
 }
 
-// Reload re-reads the config file. An invalid file is logged and ignored.
-// Entries whose ref or account changed, or that were removed, are wiped.
+// Reload re-reads the config file and the trusted projects. An invalid config
+// file is logged and ignored. Entries whose ref or account changed, or that
+// were removed, are wiped.
 func (a *Agent) Reload() error {
 	a.reloadMu.Lock()
 	defer a.reloadMu.Unlock()
-	data, err := os.ReadFile(a.opts.ConfigPath)
+	files, err := config.ReadFiles(a.opts.ConfigPath)
 	if err != nil {
 		a.opts.Log.Error("config reload: " + err.Error())
 		return err
 	}
-	sum := sha256.Sum256(data)
+	sum := files.Sum
 	a.mu.Lock()
 	unchanged := sum == a.cfgHash
 	a.mu.Unlock()
 	if unchanged {
 		return nil
 	}
-	cfg, err := config.Parse(data)
+	cfg, warnings, err := files.Parse()
 	if err != nil {
 		if sum != a.badHash {
 			a.badHash = sum
@@ -216,6 +224,7 @@ func (a *Agent) Reload() error {
 		}
 		return err
 	}
+	logWarnings(a.opts.Log, warnings)
 	a.mu.Lock()
 	for _, name := range a.cfg.Names() {
 		old := a.cfg.Secrets[name]

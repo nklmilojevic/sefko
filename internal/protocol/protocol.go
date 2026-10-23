@@ -22,6 +22,7 @@ const (
 	OpLock     = "lock"
 	OpStatus   = "status"
 	OpNames    = "names"
+	OpReload   = "reload" // read the config and trusted projects now
 )
 
 // Error codes.
@@ -32,6 +33,7 @@ const (
 	CodeBadRequest = "bad_request"
 	CodeVersion    = "version"
 	CodeInternal   = "internal"
+	CodeConfig     = "config" // reload found an invalid config
 )
 
 // Validation results.
