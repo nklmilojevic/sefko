@@ -373,8 +373,6 @@ The workflow does not use Nix, because binaries from the Nix toolchain link to f
 The tests do not use real 1Password.
 The test binary operates as a fake `op` command.
 
-The specification is in [docs/spec.md](docs/spec.md).
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
