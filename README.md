@@ -179,14 +179,14 @@ It keeps the values that did not change.
 | Command | Function |
 | --- | --- |
 | `sefko get <alias>` | Writes the value to standard output, with no newline at the end. |
-| `sefko exec <alias>... -- <command>` | Starts the command with the secrets in its environment. |
+| `sefko exec <alias>... -- <command>` | Starts the command with the secrets in its environment. Use `--project` or `--if-trusted` to add the secrets of a project. |
 | `sefko env <alias>...` | Writes `set -gx` commands for fish. Use `--shell posix` for `export` commands. |
 | `sefko wrap <alias> -- <command>` | Starts the command with the secret. If the token is not valid, it reads a new token. See [Wrap a command](#wrap-a-command). |
 | `sefko refresh <alias>` | Removes the value and reads it again from 1Password. |
 | `sefko validate <alias>` | Does the HTTP check. If the service rejects the value, it reads the value again. |
 | `sefko lock` | Removes all values. |
 | `sefko status` | Shows the agent, the values in memory, and the last 50 requests. Use `--json` for JSON output. |
-| `sefko trust [file]` | Adds the secrets of a project file to the allowlist. See [Share secrets with a project](#share-secrets-with-a-project). |
+| `sefko trust [file]` | Adds the secrets of a project file or a varlock schema to the allowlist. See [Share secrets with a project](#share-secrets-with-a-project). |
 | `sefko untrust [project]` | Removes the secrets of a project from the allowlist and from memory. |
 | `sefko agent` | Starts the agent. launchd uses this command. |
 | `sefko service install` | Writes a launchd agent and starts it. Use it only without the Home Manager module. |
@@ -385,6 +385,90 @@ exec varlock run -- "$@"
 ```
 
 To remove the secrets of a project, run `sefko untrust`.
+
+### Use the secrets of a varlock schema
+
+If a repository uses [varlock](https://varlock.dev), sefko can read the secrets from its `.env.schema`.
+The repository does not need a `.sefko.toml`.
+
+`varlock run` reads each `op()` value from 1Password each time that it starts, so 1Password can show a prompt each time.
+If a variable is already in the environment, varlock uses that value and does not read 1Password.
+sefko puts the values in the environment from its memory.
+
+1. Read the schema, then trust it:
+
+   ```fish
+   sefko trust
+   ```
+
+   If a directory has no `.sefko.toml`, sefko uses the nearest `.env.schema`.
+   It adds each `KEY=op("op://...")` item of an `@initOp(allowAppAuth=true, account=...)` instance.
+   The alias of the item is the name of the variable in lowercase, for example `app_key`.
+   The name of the project is the name of the repository, for example `myapp/app_key`.
+   All worktrees of a repository use one project and one cache.
+
+   sefko does not add these items, and it shows them in the output under `left to varlock`:
+
+   - An `op()` call in an expression, for example `if($BRANCH, op("..."))`.
+   - A reference with a variable in it, or a one-time password.
+   - An `op()` call with `allowMissing=true`.
+   - An instance without `allowAppAuth=true`, without a fixed `account`, or with `connectHost`.
+
+   varlock reads these items from 1Password as before.
+
+2. Start varlock through sefko:
+
+   ```fish
+   sefko exec --if-trusted -- varlock run -- docker compose up
+   ```
+
+   To make this occur each time that you run `varlock`, wrap varlock. See [Wrap varlock](#wrap-varlock).
+
+sefko does not set a variable if:
+
+- The variable is already in the environment.
+- The variable is in `.env` or `.env.local` next to the schema, or in the files of the current environment (`@currentEnv`).
+  varlock gives the environment a higher priority than these files, so a value from sefko would hide your own value.
+- sefko cannot read the item, for example because you do not have access to it.
+  sefko shows a warning, and varlock reads the item.
+
+If a branch adds or changes an `op()` item, run `sefko trust` again.
+sefko adds the new items to the project and keeps the items of the other worktrees.
+A change to other lines of the schema has no effect on the trust.
+
+### Wrap varlock
+
+`sefko exec --if-trusted` never stops the command:
+
+- If there is no trusted project, it starts the command without changes.
+  If the project is not trusted, or if it changed, it shows a note.
+- If the agent does not run, it starts the command without the secrets.
+  It does not read from 1Password directly, because that can show one prompt for each secret.
+
+Thus a wrapper can always use it.
+The flake has a function that wraps varlock:
+
+```nix
+sefko.lib.mkVarlock pkgs { package = varlock; }
+```
+
+The wrapper finds `sefko` in `PATH` when it starts.
+If `sefko` is not installed, or if its version does not have `--if-trusted`, the wrapper starts varlock without changes.
+Thus you can put the wrapper in a dev shell that all the team uses.
+
+> **Note:** A dev shell puts its `varlock` before the `varlock` from Home Manager in `PATH`.
+> If a repository gets varlock from its dev shell, wrap varlock in that dev shell.
+
+Without Nix, put a script with the name `varlock` before the real program in `PATH`:
+
+```sh
+#!/bin/sh
+real=/opt/homebrew/bin/varlock
+if command -v sefko >/dev/null; then
+  exec sefko exec --if-trusted -- "$real" "$@"
+fi
+exec "$real" "$@"
+```
 
 ## Logs
 

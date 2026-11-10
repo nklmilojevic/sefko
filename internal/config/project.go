@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -84,6 +85,30 @@ func (p *Project) Equal(o *Project) bool {
 	return p.Name == o.Name && reflect.DeepEqual(p.Secrets, o.Secrets)
 }
 
+// Covers reports whether p allows every secret of o exactly as o declares it.
+func (p *Project) Covers(o *Project) bool {
+	if p.Name != o.Name {
+		return false
+	}
+	for alias, s := range o.Secrets {
+		if t, ok := p.Secrets[alias]; !ok || !reflect.DeepEqual(t, s) {
+			return false
+		}
+	}
+	return true
+}
+
+// Merge returns a project with the secrets of p and o. Where both have an
+// alias, o wins.
+func (p *Project) Merge(o *Project) *Project {
+	out := &Project{Name: o.Name, Account: o.Account, Secrets: maps.Clone(p.Secrets)}
+	if out.Secrets == nil {
+		out.Secrets = map[string]Secret{}
+	}
+	maps.Copy(out.Secrets, o.Secrets)
+	return out
+}
+
 // ProjectsDir holds the trusted copies of project files, next to the config file.
 func ProjectsDir(configPath string) string {
 	return filepath.Join(filepath.Dir(configPath), "projects")
@@ -94,19 +119,42 @@ func TrustedPath(configPath, name string) string {
 	return filepath.Join(ProjectsDir(configPath), name+".toml")
 }
 
-// FindProject returns the nearest ProjectFile in dir or one of its parents.
+// FindProject returns the nearest ProjectFile or SchemaFile in dir or one of
+// its parents. In one directory, ProjectFile wins.
 func FindProject(dir string) (string, error) {
 	for d := dir; ; {
-		p := filepath.Join(d, ProjectFile)
-		if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
-			return p, nil
+		for _, name := range []string{ProjectFile, SchemaFile} {
+			p := filepath.Join(d, name)
+			if fi, err := os.Stat(p); err == nil && fi.Mode().IsRegular() {
+				return p, nil
+			}
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
-			return "", fmt.Errorf("no %s in %s or a parent directory: %w", ProjectFile, dir, fs.ErrNotExist)
+			return "", fmt.Errorf("no %s or %s in %s or a parent directory: %w", ProjectFile, SchemaFile, dir, fs.ErrNotExist)
 		}
 		d = parent
 	}
+}
+
+// ReadProjectFile reads a ProjectFile, or derives a project from a SchemaFile.
+// The notes list the schema items that sefko leaves to varlock.
+func ReadProjectFile(path string) (*Project, []string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	var p *Project
+	var notes []string
+	if IsSchema(path) {
+		p, notes, err = ParseSchema(SchemaProjectName(path), data)
+	} else {
+		p, err = ParseProject(data)
+	}
+	if err != nil {
+		return nil, notes, fmt.Errorf("%s: %w", path, err)
+	}
+	return p, notes, nil
 }
 
 // Files is the config file and the trusted project files as read from disk.
