@@ -80,6 +80,48 @@ func TestProjectEqual(t *testing.T) {
 	}
 }
 
+func TestMergeKeepsVariants(t *testing.T) {
+	a := Secret{Ref: "op://Dev/A/f", Account: "x", Env: "KEY"}
+	b := Secret{Ref: "op://Dev/B/f", Account: "x", Env: "KEY"}
+	other := Secret{Ref: "op://Dev/O/f", Account: "x", Env: "OTHER"}
+	main := &Project{Name: "p", Secrets: map[string]Secret{"key": a, "other": other}}
+	branch := &Project{Name: "p", Secrets: map[string]Secret{"key": b}}
+
+	merged := main.Merge(branch)
+	if len(merged.Secrets) != 3 || merged.Secrets["key"] != b || merged.Secrets["other"] != other {
+		t.Fatalf("merged: %+v", merged.Secrets)
+	}
+	for _, p := range []*Project{main, branch} {
+		bound, ok := merged.Covers(p)
+		if !ok {
+			t.Fatalf("%+v is not covered by %+v", p.Secrets, merged.Secrets)
+		}
+		for alias, s := range bound.Secrets {
+			if !ValidName(alias) || merged.Secrets[alias] != s {
+				t.Fatalf("bound %s to %+v", alias, s)
+			}
+		}
+	}
+	if bound, _ := merged.Covers(main); bound.Secrets["key"] == a {
+		t.Fatal("main is bound to the alias of the branch")
+	}
+
+	// Trusting main again swaps the two, without a third copy.
+	again := merged.Merge(main)
+	if len(again.Secrets) != 3 || again.Secrets["key"] != a {
+		t.Fatalf("again: %+v", again.Secrets)
+	}
+	if _, ok := again.Covers(branch); !ok {
+		t.Fatal("branch lost its trust")
+	}
+	if _, ok := again.Covers(&Project{Name: "p", Secrets: map[string]Secret{"key": {Ref: "op://Dev/C/f", Account: "x", Env: "KEY"}}}); ok {
+		t.Fatal("an untrusted ref is covered")
+	}
+	if _, ok := again.Covers(&Project{Name: "q", Secrets: branch.Secrets}); ok {
+		t.Fatal("another project is covered")
+	}
+}
+
 func writeFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

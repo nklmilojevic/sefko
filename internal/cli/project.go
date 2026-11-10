@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -32,20 +33,26 @@ func projectFile(arg string) (string, error) {
 // exactly what the project file at path declares. For a varlock schema it is
 // enough that the trusted copy allows every secret of the schema: the
 // worktrees of a repository share one project, and their branches can
-// declare different secrets.
-func (a *app) checkTrusted(path string, p *config.Project) error {
+// declare different secrets. It returns the project to bind, with the
+// aliases of the trusted copy. A schema with nothing for sefko to serve
+// needs no trust.
+func (a *app) checkTrusted(path string, p *config.Project) (*config.Project, error) {
+	schema := config.IsSchema(path)
+	if schema && len(p.Secrets) == 0 {
+		return p, nil
+	}
 	t, err := config.LoadProject(config.TrustedPath(a.configPath, p.Name))
 	if errors.Is(err, fs.ErrNotExist) {
-		return exit(ExitNotAllowed, fmt.Errorf("project %s is not trusted; review %s and run `sefko trust`", p.Name, path))
+		return nil, exit(ExitNotAllowed, fmt.Errorf("project %s is not trusted; review %s and run `sefko trust`", p.Name, path))
 	}
-	ok := err == nil && t.Equal(p)
-	if err == nil && config.IsSchema(path) {
-		ok = t.Covers(p)
+	bound, ok := p, err == nil && t.Equal(p)
+	if err == nil && schema {
+		bound, ok = t.Covers(p)
 	}
 	if !ok {
-		return exit(ExitNotAllowed, fmt.Errorf("%s changed since you trusted it; review it and run `sefko trust`", path))
+		return nil, exit(ExitNotAllowed, fmt.Errorf("%s changed since you trusted it; review it and run `sefko trust`", path))
 	}
-	return nil
+	return bound, nil
 }
 
 // projectBindings binds every secret with an env name in the nearest
@@ -59,23 +66,35 @@ func (a *app) projectBindings() ([]binding, error) {
 	if err != nil {
 		return nil, exit(ExitError, err)
 	}
-	if err := a.checkTrusted(path, p); err != nil {
+	bound, err := a.checkTrusted(path, p)
+	if err != nil {
 		return nil, err
 	}
-	return projectEnv(path, p), nil
+	return projectEnv(path, bound), nil
 }
 
 // optionalProjectBindings is projectBindings for --if-trusted. A missing
 // project gives no bindings. An unreadable, untrusted or changed one gives a
-// note and no bindings, so the command runs as it would without sefko.
+// note and no bindings, so the command runs as it would without sefko. The
+// nearest .sefko.toml wins, as with --project. Otherwise it takes the varlock
+// schema that varlock loads here, not the nearest one: varlock does not look
+// in parent directories, and a secret of another schema would reach the
+// command through the environment.
 func (a *app) optionalProjectBindings() []binding {
-	path, err := projectFile("")
+	wd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
+	path, err := config.FindProject(wd)
+	if err != nil || config.IsSchema(path) {
+		var ok bool
+		if path, ok = config.VarlockSchema(wd); !ok {
+			return nil
+		}
+	}
 	p, _, err := config.ReadProjectFile(path)
 	if err == nil {
-		err = a.checkTrusted(path, p)
+		p, err = a.checkTrusted(path, p)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(a.io.Stderr, "sefko:", err)
@@ -144,7 +163,13 @@ func (a *app) trustCmd() *cobra.Command {
 				return exit(ExitError, err)
 			}
 			if check {
-				return a.checkTrusted(path, p)
+				_, err := a.checkTrusted(path, p)
+				return err
+			}
+			if len(p.Secrets) == 0 {
+				_, _ = fmt.Fprintf(a.io.Stdout, "nothing to trust in %s: sefko serves none of its items\n", printable(path))
+				printNotes(a.io.Stdout, notes)
+				return nil
 			}
 			trustedPath := config.TrustedPath(a.configPath, p.Name)
 			own := p
@@ -186,12 +211,7 @@ func (a *app) trustCmd() *cobra.Command {
 			if len(others) > 0 {
 				_, _ = fmt.Fprintf(a.io.Stdout, "\nkept from other checkouts of %s: %s\n", printable(p.Name), printable(strings.Join(others, ", ")))
 			}
-			if len(notes) > 0 {
-				_, _ = fmt.Fprintln(a.io.Stdout, "\nleft to varlock")
-				for _, n := range notes {
-					_, _ = fmt.Fprintln(a.io.Stdout, "  "+printable(n))
-				}
-			}
+			printNotes(a.io.Stdout, notes)
 			return nil
 		},
 	}
@@ -232,6 +252,17 @@ func (a *app) untrustCmd() *cobra.Command {
 			_, _ = fmt.Fprintf(a.io.Stderr, "sefko: untrusted %s\n", name)
 			return nil
 		},
+	}
+}
+
+// printNotes lists the schema items that sefko leaves to varlock.
+func printNotes(w io.Writer, notes []string) {
+	if len(notes) == 0 {
+		return
+	}
+	_, _ = fmt.Fprintln(w, "\nleft to varlock")
+	for _, n := range notes {
+		_, _ = fmt.Fprintln(w, "  "+printable(n))
 	}
 }
 

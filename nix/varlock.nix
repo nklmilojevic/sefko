@@ -3,6 +3,8 @@
 # sefko on PATH when it starts, so it does not depend on sefko: without sefko,
 # with a sefko that has no --if-trusted, or in a project that is not trusted,
 # it runs varlock unchanged. That makes it safe to put in a shared dev shell.
+# With --path, varlock loads another schema than the one sefko would check,
+# so the wrapper runs varlock unchanged too.
 { lib
 , symlinkJoin
 , writeShellScript
@@ -16,6 +18,12 @@
 let
   real = lib.escapeShellArg "${package}/bin/${program}";
   script = writeShellScript "${program}-sefko" ''
+    for arg in "$@"; do
+      case $arg in
+        --) break ;;
+        -p* | --path | --path=*) exec ${real} "$@" ;;
+      esac
+    done
     if command -v sefko >/dev/null 2>&1 && sefko exec --help 2>/dev/null | ${lib.getExe gnugrep} -q -- --if-trusted; then
       exec sefko exec --if-trusted -- ${real} "$@"
     fi
