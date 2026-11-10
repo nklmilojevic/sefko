@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.4.0 - 2026-11-10
+
+This release fixes how sefko checks schema trust. Repositories trusted with v0.3.0 must be trusted again.
+
+### Fixes
+
+- `--if-trusted` now uses the schema that varlock loads and rejects `--env` and aliases. Schema project names now include a hash of the repository path, so repositories with the same name do not share trust.
+
 ## v0.3.0 - 2026-11-10
 
 This release lets sefko serve 1Password secrets from a `.env.schema` file to varlock. varlock gets the values from sefko memory, so it does not call 1Password on each run.
