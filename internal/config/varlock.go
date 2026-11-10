@@ -2,6 +2,9 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +28,7 @@ var (
 	otpRe      = regexp.MustCompile(`(?i)[?&](?:attribute|attr)=(?:otp|totp)(?:&|$)`)
 	envFlagRe  = regexp.MustCompile(`@(?:currentEnv|envFlag)\s*=\s*\$?([A-Za-z_][A-Za-z0-9_]*)`)
 	invalidRe  = regexp.MustCompile(`[^a-z0-9_-]+`)
+	refRe      = regexp.MustCompile(`^\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})$`)
 )
 
 // IsSchema reports whether path names a varlock schema rather than a ProjectFile.
@@ -32,9 +36,12 @@ func IsSchema(path string) bool { return filepath.Base(path) == SchemaFile }
 
 // opInstance is one @initOp() of a schema. A reason means sefko cannot read
 // its references the way varlock would, so it leaves them to varlock.
+// tokenVar is the variable that holds a service account token: when it has a
+// value, varlock reads with that token instead of the 1Password app.
 type opInstance struct {
-	account string
-	reason  string
+	account  string
+	reason   string
+	tokenVar string
 }
 
 type schemaItem struct {
@@ -83,7 +90,8 @@ func ParseSchema(name string, data []byte) (*Project, []string, error) {
 		p.Secrets[alias] = Secret{Ref: it.ref, Account: inst.account, Env: key}
 	}
 	if len(p.Secrets) == 0 {
-		return nil, notes, fmt.Errorf("no op() reference that sefko can serve")
+		// Nothing to serve is not an error: varlock resolves every item.
+		return p, notes, nil
 	}
 	data, err := p.Encode()
 	if err != nil {
@@ -232,6 +240,12 @@ func parseInitOp(args string) (string, opInstance) {
 			}
 		case "allowAppAuth":
 			appAuth = v == "true"
+		case "token":
+			if name, ok := refName(v); ok {
+				inst.tokenVar = name
+			} else {
+				inst.reason = "the @initOp() token is not a $VARIABLE"
+			}
 		case "connectHost":
 			inst.reason = "it reads from a 1Password Connect server"
 		case "allowMissing":
@@ -354,6 +368,15 @@ func literal(s string) (string, bool) {
 	return s, bareWordRe.MatchString(s)
 }
 
+// refName returns NAME for $NAME or ${NAME}.
+func refName(s string) (string, bool) {
+	m := refRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", false
+	}
+	return m[1] + m[2], true
+}
+
 func cutNamed(arg string) (string, string, bool) {
 	if arg == "" || strings.ContainsRune(`"'`+"`", rune(arg[0])) {
 		return "", "", false
@@ -383,17 +406,28 @@ func sanitizeName(s string) string {
 // SchemaProjectName names the project of a schema after its repository, so
 // every worktree of a repository shares one trusted project and one cache.
 // A schema below the repository root gets its directory added to the name.
+// The name ends in a hash of where the main repository is, so that another
+// repository with the same name cannot use its trust.
 func SchemaProjectName(schemaPath string) string {
 	dir := filepath.Dir(schemaPath)
 	root, repo := repoRoot(dir)
+	if r, err := filepath.EvalSymlinks(repo); err == nil {
+		repo = r
+	}
+	sum := sha256.Sum256([]byte(repo))
+	suffix := "-" + hex.EncodeToString(sum[:4])
 	name := sanitizeName(filepath.Base(repo))
 	if rel, err := filepath.Rel(root, dir); err == nil && rel != "." {
 		name = sanitizeName(name + "-" + filepath.ToSlash(rel))
 	}
+	name = strings.TrimRight(name, "_-")
 	if name == "" {
-		return "project"
+		name = "project"
 	}
-	return name
+	if max := 64 - len(suffix); len(name) > max {
+		name = name[:max]
+	}
+	return name + suffix
 }
 
 // repoRoot returns the working tree that contains dir and the directory of
@@ -444,32 +478,70 @@ func worktreeRepo(root, gitFile string) string {
 	return common
 }
 
-// SchemaOverrides returns the variables that varlock takes from somewhere
-// other than the schema: the environment and the local .env files next to
-// it. varlock prefers the environment to every file, so sefko must not set
-// these, or it would hide a developer's own value.
+// SchemaOverrides returns the variables that sefko must not set for a
+// schema. These are the variables that varlock takes from somewhere other
+// than the schema: the environment and the local .env files next to it.
+// varlock prefers the environment to every file, so a value from sefko would
+// hide a developer's own value. They also include the items of an @initOp()
+// instance whose token has a value, because varlock reads those with the
+// service account, which can have other access than the 1Password app.
 func SchemaOverrides(schemaPath string, lookupEnv func(string) (string, bool)) map[string]bool {
 	dir := filepath.Dir(schemaPath)
 	schema, _ := os.ReadFile(schemaPath)
 	out := map[string]bool{}
+	set := map[string]bool{}
+	for k, v := range itemValues(schema) {
+		set[k] = v != ""
+	}
 	for _, f := range overrideFiles(dir, schema, lookupEnv) {
 		data, err := os.ReadFile(filepath.Join(dir, f))
 		if err != nil {
 			continue
 		}
-		for line := range strings.Lines(string(data)) {
-			if m := itemRe.FindStringSubmatch(strings.TrimRight(line, "\r\n")); m != nil {
-				out[m[1]] = true
-			}
+		for k, v := range itemValues(data) {
+			out[k] = true
+			set[k] = set[k] || v != ""
 		}
+	}
+	instances, items := scanSchema(schema)
+	for key, it := range items {
+		inst := instances[it.instance]
+		if inst.tokenVar == "" {
+			continue
+		}
+		if v, ok := lookupEnv(inst.tokenVar); (ok && v != "") || set[inst.tokenVar] {
+			out[key] = true
+		}
+	}
+	return out
+}
+
+// itemValues returns the last value of each variable in a .env file, without
+// its quotes or a comment. A value that sefko cannot read stays as written.
+func itemValues(data []byte) map[string]string {
+	out := map[string]string{}
+	for line := range strings.Lines(string(data)) {
+		m := itemRe.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
+		if m == nil {
+			continue
+		}
+		v := strings.TrimSpace(m[2])
+		if q, end, ok := quoted(v); ok && end >= 0 {
+			v = q
+		} else if strings.HasPrefix(v, "#") {
+			v = ""
+		}
+		out[m[1]] = v
 	}
 	return out
 }
 
 // overrideFiles lists the files varlock loads on top of the schema. Without
 // an environment flag that is .env and .env.local. With one, it adds the
-// files of the current environment; if sefko cannot tell which environment
-// that is, it takes every .env.* file, so it never hides an override.
+// files of the current environment. varlock takes the flag from the
+// environment, then .env.local, .env and the schema. If sefko cannot tell
+// which environment that is, it takes every .env.* file, so it never hides
+// an override.
 func overrideFiles(dir string, schema []byte, lookupEnv func(string) (string, bool)) []string {
 	files := []string{".env", ".env.local"}
 	m := envFlagRe.FindSubmatch(schema)
@@ -477,19 +549,22 @@ func overrideFiles(dir string, schema []byte, lookupEnv func(string) (string, bo
 		return files
 	}
 	flag := string(m[1])
+	env := func(v string) []string { return append(files, ".env."+v, ".env."+v+".local") }
 	if v, ok := lookupEnv(flag); ok && v != "" {
-		return append(files, ".env."+v, ".env."+v+".local")
+		return env(v)
 	}
-	for line := range strings.Lines(string(schema)) {
-		if im := itemRe.FindStringSubmatch(strings.TrimRight(line, "\r\n")); im != nil && im[1] == flag {
-			v := strings.TrimSpace(im[2])
-			if s, end, ok := quoted(v); ok && end >= 0 {
-				v = s
-			}
-			if bareWordRe.MatchString(v) {
-				return append(files, ".env."+v, ".env."+v+".local")
-			}
+	sources := [][]byte{nil, nil, schema}
+	sources[0], _ = os.ReadFile(filepath.Join(dir, ".env.local"))
+	sources[1], _ = os.ReadFile(filepath.Join(dir, ".env"))
+	for _, src := range sources {
+		v, ok := itemValues(src)[flag]
+		if !ok {
+			continue
 		}
+		if v != "" && bareWordRe.MatchString(v) {
+			return env(v)
+		}
+		break
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
@@ -499,4 +574,43 @@ func overrideFiles(dir string, schema []byte, lookupEnv func(string) (string, bo
 		}
 	}
 	return files
+}
+
+// VarlockSchema returns the schema that varlock loads when it starts in dir
+// without --path: the .env.schema in dir, or in the one directory that
+// varlock.loadPath in dir/package.json names. varlock does not look in the
+// parent directories. It returns false when there is none, or when sefko
+// cannot tell which one it is.
+func VarlockSchema(dir string) (string, bool) {
+	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
+		var pkg struct {
+			Varlock struct {
+				LoadPath json.RawMessage `json:"loadPath"`
+			} `json:"varlock"`
+		}
+		// varlock ignores a package.json that it cannot parse.
+		if json.Unmarshal(data, &pkg) == nil && len(pkg.Varlock.LoadPath) > 0 && string(pkg.Varlock.LoadPath) != "null" {
+			var one string
+			if err := json.Unmarshal(pkg.Varlock.LoadPath, &one); err != nil {
+				var many []string
+				if json.Unmarshal(pkg.Varlock.LoadPath, &many) != nil || len(many) != 1 {
+					return "", false
+				}
+				one = many[0]
+			}
+			// An empty path is the directory itself, as in varlock.
+			if !filepath.IsAbs(one) {
+				one = filepath.Join(dir, one)
+			}
+			if fi, err := os.Stat(one); err != nil || !fi.IsDir() {
+				return "", false
+			}
+			dir = filepath.Clean(one)
+		}
+	}
+	path := filepath.Join(dir, SchemaFile)
+	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
+		return "", false
+	}
+	return path, true
 }

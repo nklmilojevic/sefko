@@ -1,5 +1,5 @@
 # Runs the varlock wrapper without sefko, with a sefko that has no
-# --if-trusted, and with a current sefko.
+# --if-trusted, with a current sefko, and with varlock's --path.
 { pkgs }:
 
 let
@@ -22,5 +22,11 @@ pkgs.runCommand "sefko-varlock-wrapper-test" { } ''
   check "$(PATH=${oldSefko}/bin:${base} ${wrapped}/bin/varlock run -- x)" "real run -- x" "old sefko"
   check "$(PATH=${newSefko}/bin:${base} ${wrapped}/bin/varlock run -- x)" \
     "sefko exec --if-trusted -- ${varlock}/bin/varlock run -- x" "current sefko"
+  check "$(PATH=${newSefko}/bin:${base} ${wrapped}/bin/varlock run --path ./other -- x)" \
+    "real run --path ./other -- x" "--path"
+  check "$(PATH=${newSefko}/bin:${base} ${wrapped}/bin/varlock run -p=./other -- x)" \
+    "real run -p=./other -- x" "-p"
+  check "$(PATH=${newSefko}/bin:${base} ${wrapped}/bin/varlock run -- x --path y)" \
+    "sefko exec --if-trusted -- ${varlock}/bin/varlock run -- x --path y" "--path of the command"
   touch $out
 ''

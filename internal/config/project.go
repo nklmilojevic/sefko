@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -85,28 +86,69 @@ func (p *Project) Equal(o *Project) bool {
 	return p.Name == o.Name && reflect.DeepEqual(p.Secrets, o.Secrets)
 }
 
-// Covers reports whether p allows every secret of o exactly as o declares it.
-func (p *Project) Covers(o *Project) bool {
+// Covers reports whether p allows every secret of o exactly as o declares
+// it. The returned project is o with each secret under the alias that p
+// allows it as: its own alias, or the variant that Merge kept for another
+// checkout.
+func (p *Project) Covers(o *Project) (*Project, bool) {
 	if p.Name != o.Name {
-		return false
+		return nil, false
 	}
+	out := &Project{Name: p.Name, Account: o.Account, Secrets: map[string]Secret{}}
 	for alias, s := range o.Secrets {
-		if t, ok := p.Secrets[alias]; !ok || !reflect.DeepEqual(t, s) {
-			return false
+		trusted, ok := p.find(alias, s)
+		if !ok {
+			return nil, false
+		}
+		out.Secrets[trusted] = s
+	}
+	return out, true
+}
+
+// find returns the alias under which p has s, preferring alias itself.
+func (p *Project) find(alias string, s Secret) (string, bool) {
+	if t, ok := p.Secrets[alias]; ok && reflect.DeepEqual(t, s) {
+		return alias, true
+	}
+	for _, a := range p.Aliases() {
+		if reflect.DeepEqual(p.Secrets[a], s) {
+			return a, true
 		}
 	}
-	return true
+	return "", false
 }
 
 // Merge returns a project with the secrets of p and o. Where both have an
-// alias, o wins.
+// alias with different secrets, o keeps the alias and the secret of p moves to
+// a variant of it, so a checkout whose branch declares it stays trusted.
 func (p *Project) Merge(o *Project) *Project {
-	out := &Project{Name: o.Name, Account: o.Account, Secrets: maps.Clone(p.Secrets)}
+	out := &Project{Name: o.Name, Account: o.Account, Secrets: maps.Clone(o.Secrets)}
 	if out.Secrets == nil {
 		out.Secrets = map[string]Secret{}
 	}
-	maps.Copy(out.Secrets, o.Secrets)
+	for _, alias := range p.Aliases() {
+		s := p.Secrets[alias]
+		if _, dup := out.find(alias, s); dup {
+			continue
+		}
+		if _, taken := out.Secrets[alias]; taken {
+			alias = variantAlias(alias, s)
+		}
+		out.Secrets[alias] = s
+	}
 	return out
+}
+
+// variantAlias names another version of the secret behind alias. Schema
+// aliases come from variable names, which have no dash, so it cannot hide
+// the alias of another variable.
+func variantAlias(alias string, s Secret) string {
+	sum := sha256.Sum256([]byte(s.Account + "\x00" + s.Ref + "\x00" + s.Env))
+	suffix := "-" + hex.EncodeToString(sum[:4])
+	if max := 64 - len(suffix); len(alias) > max {
+		alias = alias[:max]
+	}
+	return alias + suffix
 }
 
 // ProjectsDir holds the trusted copies of project files, next to the config file.

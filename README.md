@@ -404,8 +404,10 @@ sefko puts the values in the environment from its memory.
    If a directory has no `.sefko.toml`, sefko uses the nearest `.env.schema`.
    It adds each `KEY=op("op://...")` item of an `@initOp(allowAppAuth=true, account=...)` instance.
    The alias of the item is the name of the variable in lowercase, for example `app_key`.
-   The name of the project is the name of the repository, for example `myapp/app_key`.
+   The name of the project is the name of the repository and a hash of its path, for example `myapp-1a2b3c4d/app_key`.
    All worktrees of a repository use one project and one cache.
+   Another clone of the repository is another project, so you must trust it separately.
+   If you move the repository, trust it again.
 
    sefko does not add these items, and it shows them in the output under `left to varlock`:
 
@@ -413,8 +415,10 @@ sefko puts the values in the environment from its memory.
    - A reference with a variable in it, or a one-time password.
    - An `op()` call with `allowMissing=true`.
    - An instance without `allowAppAuth=true`, without a fixed `account`, or with `connectHost`.
+   - An instance with a `token` that is not a variable, for example `token="ops_..."`.
 
    varlock reads these items from 1Password as before.
+   If sefko can serve no item of the schema, `sefko trust` lists the items and trusts nothing.
 
 2. Start varlock through sefko:
 
@@ -429,11 +433,16 @@ sefko does not set a variable if:
 - The variable is already in the environment.
 - The variable is in `.env` or `.env.local` next to the schema, or in the files of the current environment (`@currentEnv`).
   varlock gives the environment a higher priority than these files, so a value from sefko would hide your own value.
+  sefko finds the current environment as varlock does: in the environment, then in `.env.local`, `.env` and the schema.
+  If sefko cannot tell the environment, it uses all `.env.*` files.
+- The item is from an `@initOp(token=$OP_TOKEN, ...)` instance, and `OP_TOKEN` has a value in the environment, the schema, or a local `.env` file.
+  varlock then reads the item with the service account, which can have different access than you have.
 - sefko cannot read the item, for example because you do not have access to it.
   sefko shows a warning, and varlock reads the item.
 
 If a branch adds or changes an `op()` item, run `sefko trust` again.
 sefko adds the new items to the project and keeps the items of the other worktrees.
+If two worktrees use different items for one variable, sefko keeps both, and each worktree gets its own item.
 A change to other lines of the schema has no effect on the trust.
 
 ### Wrap varlock
@@ -446,6 +455,13 @@ A change to other lines of the schema has no effect on the trust.
   It does not read from 1Password directly, because that can show one prompt for each secret.
 
 Thus a wrapper can always use it.
+For this reason, `--if-trusted` takes no aliases and no `--env`.
+
+`--if-trusted` uses a `.env.schema` only if varlock loads it.
+varlock loads the schema in the working directory, or in the directory that `varlock.loadPath` in `package.json` specifies.
+varlock does not look in parent directories.
+In a different directory, sefko starts the command without changes.
+
 The flake has a function that wraps varlock:
 
 ```nix
@@ -454,6 +470,7 @@ sefko.lib.mkVarlock pkgs { package = varlock; }
 
 The wrapper finds `sefko` in `PATH` when it starts.
 If `sefko` is not installed, or if its version does not have `--if-trusted`, the wrapper starts varlock without changes.
+It also starts varlock without changes if you use `--path`, because varlock then loads a different schema.
 Thus you can put the wrapper in a dev shell that all the team uses.
 
 > **Note:** A dev shell puts its `varlock` before the `varlock` from Home Manager in `PATH`.
@@ -464,6 +481,12 @@ Without Nix, put a script with the name `varlock` before the real program in `PA
 ```sh
 #!/bin/sh
 real=/opt/homebrew/bin/varlock
+for arg in "$@"; do
+  case $arg in
+    --) break ;;
+    -p* | --path | --path=*) exec "$real" "$@" ;;
+  esac
+done
 if command -v sefko >/dev/null; then
   exec sefko exec --if-trusted -- "$real" "$@"
 fi

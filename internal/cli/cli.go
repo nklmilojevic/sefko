@@ -282,6 +282,11 @@ const (
 // bindings resolves positional aliases (using their default env names),
 // --env NAME=alias overrides and the nearest project file.
 func (a *app) bindings(aliases, overrides []string, project projectMode) ([]binding, error) {
+	if project == ifTrusted && (len(aliases) > 0 || len(overrides) > 0) {
+		// --if-trusted never stops the command, but a named alias that
+		// cannot be read would have to.
+		return nil, exit(ExitUsage, errors.New("--if-trusted takes no aliases and no --env"))
+	}
 	var out []binding
 	for _, o := range overrides {
 		env, alias, ok := strings.Cut(o, "=")
@@ -390,8 +395,9 @@ func (a *app) execCmd() *cobra.Command {
 			"--project adds every secret of the nearest trusted project file. --if-trusted\n" +
 			"does the same, but never stops the command: without a trusted project it\n" +
 			"runs the command unchanged, and it leaves out a secret it cannot read. It\n" +
-			"does not read from 1Password directly when the agent is down. Use it in a\n" +
-			"wrapper, for example around varlock.",
+			"does not read from 1Password directly when the agent is down, and it takes\n" +
+			"no aliases or --env. It uses a varlock " + config.SchemaFile + " only if varlock\n" +
+			"loads it in this directory. Use it in a wrapper, for example around varlock.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dash := cmd.ArgsLenAtDash()
 			if dash < 0 || dash == len(args) {
