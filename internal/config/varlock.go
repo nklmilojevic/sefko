@@ -450,7 +450,11 @@ func repoRoot(dir string) (root, repo string) {
 	}
 }
 
-// worktreeRepo follows a worktree's .git file to the main repository.
+// worktreeRepo follows a worktree's .git file to the main repository. Any
+// directory can have a .git file that points into another repository, so it
+// accepts only a worktree that the repository registered: the gitdir must be
+// in <repository>/.git/worktrees, and its gitdir file must point back to
+// gitFile. Anything else is a repository of its own.
 func worktreeRepo(root, gitFile string) string {
 	data, err := os.ReadFile(gitFile)
 	if err != nil {
@@ -464,18 +468,47 @@ func worktreeRepo(root, gitFile string) string {
 	if !filepath.IsAbs(gitDir) {
 		gitDir = filepath.Join(root, gitDir)
 	}
-	common := gitDir
-	if b, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
-		common = strings.TrimSpace(string(b))
-		if !filepath.IsAbs(common) {
-			common = filepath.Join(gitDir, common)
-		}
+	gitDir, err = filepath.EvalSymlinks(gitDir)
+	if err != nil {
+		return root
+	}
+	back, err := os.ReadFile(filepath.Join(gitDir, "gitdir"))
+	if err != nil {
+		return root
+	}
+	backlink := strings.TrimSpace(string(back))
+	if !filepath.IsAbs(backlink) {
+		backlink = filepath.Join(gitDir, backlink)
+	}
+	if !samePath(backlink, gitFile) {
+		return root
+	}
+	b, err := os.ReadFile(filepath.Join(gitDir, "commondir"))
+	if err != nil {
+		return root
+	}
+	common := strings.TrimSpace(string(b))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(gitDir, common)
+	}
+	if !samePath(filepath.Dir(gitDir), filepath.Join(common, "worktrees")) {
+		return root
 	}
 	common = filepath.Clean(common)
 	if filepath.Base(common) == ".git" {
 		return filepath.Dir(common)
 	}
 	return common
+}
+
+// samePath reports whether a and b name the same existing file.
+func samePath(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	return err == nil && ra == rb
 }
 
 // SchemaOverrides returns the variables that sefko must not set for a
@@ -488,38 +521,64 @@ func worktreeRepo(root, gitFile string) string {
 func SchemaOverrides(schemaPath string, lookupEnv func(string) (string, bool)) map[string]bool {
 	dir := filepath.Dir(schemaPath)
 	schema, _ := os.ReadFile(schemaPath)
+	files, envKnown := overrideFiles(dir, schema, lookupEnv)
+	// The definitions in the order varlock prefers them. The files of an
+	// environment that sefko cannot tell have no order: they only add.
+	ordered := []map[string]value{itemValues(schema)}
+	var unordered []map[string]value
 	out := map[string]bool{}
-	set := map[string]bool{}
-	for k, v := range itemValues(schema) {
-		set[k] = v != ""
-	}
-	for _, f := range overrideFiles(dir, schema, lookupEnv) {
+	for i, f := range files {
 		data, err := os.ReadFile(filepath.Join(dir, f))
 		if err != nil {
 			continue
 		}
-		for k, v := range itemValues(data) {
+		vals := itemValues(data)
+		for k := range vals {
 			out[k] = true
-			set[k] = set[k] || v != ""
 		}
+		if i < 2 || envKnown {
+			ordered = append([]map[string]value{vals}, ordered...)
+		} else {
+			unordered = append(unordered, vals)
+		}
+	}
+	tokenSet := func(name string) bool {
+		if v, ok := lookupEnv(name); ok && v != "" {
+			return true
+		}
+		for _, vals := range unordered {
+			if v := vals[name]; v.defined && v.s != "" {
+				return true
+			}
+		}
+		for _, vals := range ordered {
+			if v, ok := vals[name]; ok && v.defined {
+				return v.s != ""
+			}
+		}
+		return false
 	}
 	instances, items := scanSchema(schema)
 	for key, it := range items {
-		inst := instances[it.instance]
-		if inst.tokenVar == "" {
-			continue
-		}
-		if v, ok := lookupEnv(inst.tokenVar); (ok && v != "") || set[inst.tokenVar] {
+		if inst := instances[it.instance]; inst.tokenVar != "" && tokenSet(inst.tokenVar) {
 			out[key] = true
 		}
 	}
 	return out
 }
 
+// value is the value of a .env item as varlock reads it. An item without a
+// value (KEY=, KEY=undefined, KEY=# comment) is not defined: varlock then
+// takes the item from the file below it. KEY="" is defined and empty.
+type value struct {
+	s       string
+	defined bool
+}
+
 // itemValues returns the last value of each variable in a .env file, without
 // its quotes or a comment. A value that sefko cannot read stays as written.
-func itemValues(data []byte) map[string]string {
-	out := map[string]string{}
+func itemValues(data []byte) map[string]value {
+	out := map[string]value{}
 	for line := range strings.Lines(string(data)) {
 		m := itemRe.FindStringSubmatch(strings.TrimRight(line, "\r\n"))
 		if m == nil {
@@ -527,61 +586,65 @@ func itemValues(data []byte) map[string]string {
 		}
 		v := strings.TrimSpace(m[2])
 		if q, end, ok := quoted(v); ok && end >= 0 {
-			v = q
-		} else if strings.HasPrefix(v, "#") {
-			v = ""
+			out[m[1]] = value{s: q, defined: true}
+			continue
 		}
-		out[m[1]] = v
+		if i := strings.IndexByte(v, '#'); i >= 0 {
+			v = strings.TrimSpace(v[:i])
+		}
+		out[m[1]] = value{s: v, defined: v != "" && v != "undefined"}
 	}
 	return out
 }
 
-// overrideFiles lists the files varlock loads on top of the schema. Without
-// an environment flag that is .env and .env.local. With one, it adds the
-// files of the current environment. varlock takes the flag from the
-// environment, then .env.local, .env and the schema. If sefko cannot tell
-// which environment that is, it takes every .env.* file, so it never hides
-// an override.
-func overrideFiles(dir string, schema []byte, lookupEnv func(string) (string, bool)) []string {
+// overrideFiles lists the files varlock loads on top of the schema, in the
+// order varlock loads them, each preferred to the ones before it. Without an
+// environment flag that is .env and .env.local. With one, it adds the files
+// of the current environment. varlock takes the flag from the environment,
+// then .env.local, .env and the schema. If sefko cannot tell which
+// environment that is, it takes every .env.* file, so it never hides an
+// override, and it reports false.
+func overrideFiles(dir string, schema []byte, lookupEnv func(string) (string, bool)) ([]string, bool) {
 	files := []string{".env", ".env.local"}
 	m := envFlagRe.FindSubmatch(schema)
 	if m == nil {
-		return files
+		return files, true
 	}
 	flag := string(m[1])
-	env := func(v string) []string { return append(files, ".env."+v, ".env."+v+".local") }
+	env := func(v string) ([]string, bool) { return append(files, ".env."+v, ".env."+v+".local"), true }
 	if v, ok := lookupEnv(flag); ok && v != "" {
 		return env(v)
 	}
-	sources := [][]byte{nil, nil, schema}
-	sources[0], _ = os.ReadFile(filepath.Join(dir, ".env.local"))
-	sources[1], _ = os.ReadFile(filepath.Join(dir, ".env"))
-	for _, src := range sources {
-		v, ok := itemValues(src)[flag]
-		if !ok {
+	local, _ := os.ReadFile(filepath.Join(dir, ".env.local"))
+	dotenv, _ := os.ReadFile(filepath.Join(dir, ".env"))
+	for _, src := range [][]byte{local, dotenv, schema} {
+		v := itemValues(src)[flag]
+		if !v.defined {
 			continue
 		}
-		if v != "" && bareWordRe.MatchString(v) {
-			return env(v)
+		if bareWordRe.MatchString(v.s) {
+			return env(v.s)
 		}
 		break
 	}
 	entries, _ := os.ReadDir(dir)
 	for _, e := range entries {
 		n := e.Name()
-		if strings.HasPrefix(n, ".env.") && n != SchemaFile && !strings.Contains(n, "example") && !strings.Contains(n, "sample") {
+		known := n == SchemaFile || n == ".env.local"
+		if strings.HasPrefix(n, ".env.") && !known && !strings.Contains(n, "example") && !strings.Contains(n, "sample") {
 			files = append(files, n)
 		}
 	}
-	return files
+	return files, false
 }
 
 // VarlockSchema returns the schema that varlock loads when it starts in dir
-// without --path: the .env.schema in dir, or in the one directory that
-// varlock.loadPath in dir/package.json names. varlock does not look in the
-// parent directories. It returns false when there is none, or when sefko
-// cannot tell which one it is.
+// without --path: the .env.schema in dir, or the one that varlock.loadPath in
+// dir/package.json names, as a directory or as the file itself. varlock does
+// not look in parent directories. It returns false when there is none, or
+// when sefko cannot tell which one it is.
 func VarlockSchema(dir string) (string, bool) {
+	path := filepath.Join(dir, SchemaFile)
 	if data, err := os.ReadFile(filepath.Join(dir, "package.json")); err == nil {
 		var pkg struct {
 			Varlock struct {
@@ -602,13 +665,19 @@ func VarlockSchema(dir string) (string, bool) {
 			if !filepath.IsAbs(one) {
 				one = filepath.Join(dir, one)
 			}
-			if fi, err := os.Stat(one); err != nil || !fi.IsDir() {
+			fi, err := os.Stat(one)
+			switch {
+			case err != nil:
+				return "", false
+			case fi.IsDir():
+				path = filepath.Join(one, SchemaFile)
+			case IsSchema(one):
+				path = filepath.Clean(one)
+			default:
 				return "", false
 			}
-			dir = filepath.Clean(one)
 		}
 	}
-	path := filepath.Join(dir, SchemaFile)
 	if fi, err := os.Stat(path); err != nil || !fi.Mode().IsRegular() {
 		return "", false
 	}

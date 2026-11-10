@@ -75,21 +75,20 @@ func (a *app) projectBindings() ([]binding, error) {
 
 // optionalProjectBindings is projectBindings for --if-trusted. A missing
 // project gives no bindings. An unreadable, untrusted or changed one gives a
-// note and no bindings, so the command runs as it would without sefko. A
-// varlock schema counts only if it is the one varlock loads here: varlock
-// does not look in parent directories, and a secret of another schema would
-// reach the command through the environment.
+// note and no bindings, so the command runs as it would without sefko. The
+// nearest .sefko.toml wins, as with --project. Otherwise it takes the varlock
+// schema that varlock loads here, not the nearest one: varlock does not look
+// in parent directories, and a secret of another schema would reach the
+// command through the environment.
 func (a *app) optionalProjectBindings() []binding {
 	wd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
 	path, err := config.FindProject(wd)
-	if err != nil {
-		return nil
-	}
-	if config.IsSchema(path) {
-		if loaded, ok := config.VarlockSchema(wd); !ok || loaded != path {
+	if err != nil || config.IsSchema(path) {
+		var ok bool
+		if path, ok = config.VarlockSchema(wd); !ok {
 			return nil
 		}
 	}

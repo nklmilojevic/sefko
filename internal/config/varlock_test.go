@@ -133,7 +133,20 @@ func TestSchemaProjectName(t *testing.T) {
 	wt := filepath.Join(base, "elsewhere", "feature-x")
 	writeFile(t, filepath.Join(wt, ".git"), "gitdir: "+filepath.Join(repo, ".git", "worktrees", "wt")+"\n")
 	writeFile(t, filepath.Join(repo, ".git", "worktrees", "wt", "commondir"), "../..\n")
+	writeFile(t, filepath.Join(repo, ".git", "worktrees", "wt", "gitdir"), filepath.Join(wt, ".git")+"\n")
 	writeFile(t, filepath.Join(wt, SchemaFile), "")
+
+	// Directories with a .git file that the repository did not register.
+	forged := map[string]string{
+		"to the repository": filepath.Join(repo, ".git"),
+		"to its worktree":   filepath.Join(repo, ".git", "worktrees", "wt"),
+	}
+	for label, target := range forged {
+		dir := filepath.Join(base, "forged", strings.ReplaceAll(label, " ", "-"), "My.Repo")
+		writeFile(t, filepath.Join(dir, ".git"), "gitdir: "+target+"\n")
+		writeFile(t, filepath.Join(dir, SchemaFile), "")
+		forged[label] = dir
+	}
 
 	// Another repository with the same name.
 	twin := filepath.Join(base, "fork", "My.Repo")
@@ -171,6 +184,11 @@ func TestSchemaProjectName(t *testing.T) {
 	}
 	if got := name(filepath.Join(twin, SchemaFile)); got == main {
 		t.Errorf("another repository with the same name shares %q", got)
+	}
+	for label, dir := range forged {
+		if got := name(filepath.Join(dir, SchemaFile)); got == main {
+			t.Errorf("a .git file %s shares %q", label, got)
+		}
 	}
 }
 
@@ -215,8 +233,17 @@ func TestSchemaOverrides(t *testing.T) {
 	writeFile(t, schema, "# @currentEnv=$APP_ENV\n# ---\nAPP_ENV=dev\n")
 	writeFile(t, filepath.Join(dir, ".env.dev"), "DEV_ONLY=1\n")
 	writeFile(t, filepath.Join(dir, ".env.local"), "LOCAL_ONLY=1\nAPP_ENV=production # mine\n")
-	if got := keys(SchemaOverrides(schema, noEnv)); got != "APP_ENV,APP_KEY,DEV_ONLY,LOCAL_ONLY,OTHER,PROD_ONLY" {
+	if got := keys(SchemaOverrides(schema, noEnv)); got != "APP_ENV,APP_KEY,LOCAL_ONLY,OTHER,PROD_ONLY" {
 		t.Fatalf("env with a comment in .env.local: %s", got)
+	}
+	// An empty KEY= is no value: varlock takes the one below it.
+	writeFile(t, filepath.Join(dir, ".env.local"), "LOCAL_ONLY=1\nAPP_ENV=\n")
+	if got := keys(SchemaOverrides(schema, noEnv)); got != "APP_ENV,APP_KEY,DEV_ONLY,LOCAL_ONLY,OTHER" {
+		t.Fatalf("empty env in .env.local: %s", got)
+	}
+	writeFile(t, filepath.Join(dir, ".env.local"), "LOCAL_ONLY=1\nAPP_ENV=$(whoami)\n")
+	if got := keys(SchemaOverrides(schema, noEnv)); got != "APP_ENV,APP_KEY,DEV_ONLY,LOCAL_ONLY,OTHER,PROD_ONLY" {
+		t.Fatalf("computed env in .env.local: %s", got)
 	}
 	writeFile(t, filepath.Join(dir, ".env.local"), "LOCAL_ONLY=1\nAPP_ENV=\"production\"\n")
 	if got := keys(SchemaOverrides(schema, noEnv)); got != "APP_ENV,APP_KEY,LOCAL_ONLY,OTHER,PROD_ONLY" {
@@ -230,31 +257,45 @@ func TestSchemaOverrides(t *testing.T) {
 }
 
 func TestSchemaOverridesToken(t *testing.T) {
-	dir := t.TempDir()
-	schema := filepath.Join(dir, SchemaFile)
 	const head = "# @initOp(token=$OP_TOKEN, allowAppAuth=true, account=a.example)\n" +
-		"# @initOp(id=app, allowAppAuth=true, account=a.example)\n# ---\n"
+		"# @initOp(id=app, allowAppAuth=true, account=a.example)\n"
 	const items = "KEY=op(\"op://V/I/f\")\nAPP=op(app, \"op://V/A/f\")\n"
+	const envHead = "# @currentEnv=$APP_ENV\n" + head + "APP_ENV=prod\n"
 	noEnv := func(string) (string, bool) { return "", false }
 	withToken := func(k string) (string, bool) { return "ops_x", k == "OP_TOKEN" }
 	emptyToken := func(k string) (string, bool) { return "", k == "OP_TOKEN" }
 
 	for name, tc := range map[string]struct {
-		schema, local string
-		env           func(string) (string, bool)
-		want          bool
+		schema string
+		files  map[string]string
+		env    func(string) (string, bool)
+		want   bool
 	}{
-		"no token anywhere":     {head + "OP_TOKEN=\n" + items, "", noEnv, false},
-		"empty in environment":  {head + items, "", emptyToken, false},
-		"in the environment":    {head + items, "", withToken, true},
-		"in .env.local":         {head + items, "OP_TOKEN=ops_x\n", noEnv, true},
-		"empty in .env.local":   {head + items, "OP_TOKEN=\n", noEnv, false},
-		"value in the schema":   {head + "OP_TOKEN=op(\"op://V/T/f\")\n" + items, "", noEnv, true},
-		"with braces in schema": {strings.Replace(head, "$OP_TOKEN", "${OP_TOKEN}", 1) + items, "", withToken, true},
+		"no token anywhere":      {head + "OP_TOKEN=\n" + items, nil, noEnv, false},
+		"empty in environment":   {head + items, nil, emptyToken, false},
+		"in the environment":     {head + items, nil, withToken, true},
+		"in .env.local":          {head + items, map[string]string{".env.local": "OP_TOKEN=ops_x\n"}, noEnv, true},
+		"no value in .env.local": {head + items, map[string]string{".env.local": "OP_TOKEN=\n"}, noEnv, false},
+		"value in the schema":    {head + "OP_TOKEN=op(\"op://V/T/f\")\n" + items, nil, noEnv, true},
+		"with braces in schema":  {strings.Replace(head, "$OP_TOKEN", "${OP_TOKEN}", 1) + items, nil, withToken, true},
+
+		// The definition that varlock prefers decides; KEY= is no definition.
+		"schema, cleared by .env.local":    {head + "OP_TOKEN=ops_x\n" + items, map[string]string{".env.local": "OP_TOKEN=\"\"\n"}, noEnv, false},
+		"schema, KEY= in .env.local":       {head + "OP_TOKEN=ops_x\n" + items, map[string]string{".env.local": "OP_TOKEN=\n"}, noEnv, true},
+		".env, cleared by .env.local":      {head + items, map[string]string{".env": "OP_TOKEN=ops_x\n", ".env.local": "OP_TOKEN=\"\"\n"}, noEnv, false},
+		".env.local, cleared by .env.prod": {envHead + items, map[string]string{".env.local": "OP_TOKEN=ops_x\n", ".env.prod": "OP_TOKEN=''\n"}, noEnv, false},
+		".env cleared, set by .env.local":  {head + items, map[string]string{".env": "OP_TOKEN=\"\"\n", ".env.local": "OP_TOKEN=ops_x # ci\n"}, noEnv, true},
+		// An environment that sefko cannot tell: any value counts.
+		"in some environment": {strings.Replace(envHead, "APP_ENV=prod", "APP_ENV=fallback($X, prod)", 1) + items,
+			map[string]string{".env.staging": "OP_TOKEN=ops_x\n", ".env.local": "OP_TOKEN=\"\"\n"}, noEnv, true},
 	} {
 		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			schema := filepath.Join(dir, SchemaFile)
 			writeFile(t, schema, tc.schema)
-			writeFile(t, filepath.Join(dir, ".env.local"), tc.local)
+			for f, data := range tc.files {
+				writeFile(t, filepath.Join(dir, f), data)
+			}
 			got := SchemaOverrides(schema, tc.env)
 			if got["KEY"] != tc.want {
 				t.Fatalf("KEY left to varlock: %v, want %v", got["KEY"], tc.want)
@@ -289,7 +330,9 @@ func TestVarlockSchema(t *testing.T) {
 	check("loadPath", `{"varlock": {"loadPath": "../../"}}`, filepath.Join(root, SchemaFile))
 	check("one loadPath in a list", `{"varlock": {"loadPath": ["../.."]}}`, filepath.Join(root, SchemaFile))
 	check("two loadPaths", `{"varlock": {"loadPath": ["../..", "."]}}`, "")
-	check("loadPath to a file", `{"varlock": {"loadPath": "../../.env.schema"}}`, "")
+	check("loadPath to the schema", `{"varlock": {"loadPath": "../../.env.schema"}}`, filepath.Join(root, SchemaFile))
+	writeFile(t, filepath.Join(root, ".env.prod"), "")
+	check("loadPath to another file", `{"varlock": {"loadPath": "../../.env.prod"}}`, "")
 	check("missing loadPath", `{"varlock": {"loadPath": "../nope"}}`, "")
 	check("no varlock key", `{"name": "web"}`, "")
 	writeFile(t, filepath.Join(sub, SchemaFile), "")

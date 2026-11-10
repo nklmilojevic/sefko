@@ -406,6 +406,7 @@ sefko puts the values in the environment from its memory.
    The alias of the item is the name of the variable in lowercase, for example `app_key`.
    The name of the project is the name of the repository and a hash of its path, for example `myapp-1a2b3c4d/app_key`.
    All worktrees of a repository use one project and one cache.
+   sefko accepts only a worktree that the repository registered (`git worktree add`).
    Another clone of the repository is another project, so you must trust it separately.
    If you move the repository, trust it again.
 
@@ -458,7 +459,7 @@ Thus a wrapper can always use it.
 For this reason, `--if-trusted` takes no aliases and no `--env`.
 
 `--if-trusted` uses a `.env.schema` only if varlock loads it.
-varlock loads the schema in the working directory, or in the directory that `varlock.loadPath` in `package.json` specifies.
+varlock loads the schema in the working directory, or the schema that `varlock.loadPath` in `package.json` specifies (a directory or the `.env.schema` file).
 varlock does not look in parent directories.
 In a different directory, sefko starts the command without changes.
 

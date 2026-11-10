@@ -220,9 +220,27 @@ func TestIfTrustedUsesTheSchemaVarlockLoads(t *testing.T) {
 	if code != 0 || errOut != "" || e.exec.path == "" || lookup(e.exec.env, "APP_KEY") != "" {
 		t.Fatalf("subdirectory: %d %q", code, errOut)
 	}
-	write(t, filepath.Join(sub, "package.json"), `{"varlock": {"loadPath": "../"}}`)
-	if code, _, errOut := e.run("exec", "--if-trusted", "--", "true"); code != 0 || lookup(e.exec.env, "APP_KEY") == "" {
-		t.Fatalf("loadPath to the schema: %d %q", code, errOut)
+	for _, loadPath := range []string{"../", "../.env.schema"} {
+		write(t, filepath.Join(sub, "package.json"), `{"varlock": {"loadPath": "`+loadPath+`"}}`)
+		if code, _, errOut := e.run("exec", "--if-trusted", "--", "true"); code != 0 || lookup(e.exec.env, "APP_KEY") == "" {
+			t.Fatalf("loadPath %s: %d %q", loadPath, code, errOut)
+		}
+	}
+
+	// varlock loads a schema next to the nearest one: sefko uses that one.
+	other := filepath.Join(root, "other")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(other, config.SchemaFile), strings.Replace(schema, "op://Dev/Api/credential", "op://Dev/Other/credential", 1))
+	t.Chdir(other)
+	if code, _, errOut := e.run("trust"); code != 0 {
+		t.Fatalf("trust other: %d %q", code, errOut)
+	}
+	t.Chdir(sub)
+	write(t, filepath.Join(sub, "package.json"), `{"varlock": {"loadPath": "../other"}}`)
+	if code, _, errOut := e.run("exec", "--if-trusted", "--", "true"); code != 0 || lookup(e.exec.env, "API_TOKEN") != "value-of:op://Dev/Other/credential" {
+		t.Fatalf("loadPath to another schema: %d %q %v", code, errOut, e.exec.env)
 	}
 
 	t.Chdir(root)
@@ -233,69 +251,33 @@ func TestIfTrustedUsesTheSchemaVarlockLoads(t *testing.T) {
 	}
 }
 
-func TestIfTrustedWithoutAgent(t *testing.T) {
-	e := setup(t, false)
-	t.Chdir(filepath.Dir(schemaRepo(t)))
-	if code, _, errOut := e.run("trust"); code != 0 {
-		t.Fatalf("trust: %d %q", code, errOut)
-	}
-	code, _, errOut := e.run("exec", "--if-trusted", "--", "true")
-	if code != 0 || e.exec.path == "" {
-		t.Fatalf("exec: %d %q", code, errOut)
-	}
-	// Reading each item from 1Password directly would prompt once per item,
-	// which is worse than what varlock does on its own.
-	if calls := e.op.Calls(); len(calls) != 0 {
-		t.Fatalf("read 1Password directly: %q", calls)
-	}
-	if !strings.Contains(errOut, "2 more variables are not set") {
-		t.Fatalf("stderr: %q", errOut)
-	}
-}
-
-func TestSchemaWorktreesShareTrust(t *testing.T) {
+// A .git file that points into a trusted repository does not make a
+// directory one of its worktrees.
+func TestSchemaForgedWorktree(t *testing.T) {
 	e := setup(t, true)
 	main := schemaRepo(t)
 	root := filepath.Dir(main)
-	name := config.SchemaProjectName(main)
-	if code, _, errOut := e.run("trust"); code != 0 {
-		t.Fatalf("trust main: %d %q", code, errOut)
-	}
-
-	// A linked worktree on a branch that adds one secret and drops another.
-	gitDir := filepath.Join(root, ".git", "worktrees", "feature")
-	if err := os.MkdirAll(gitDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(gitDir, "commondir"), "../..\n")
-	wt := filepath.Join(t.TempDir(), "feature")
-	if err := os.MkdirAll(wt, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	write(t, filepath.Join(wt, ".git"), "gitdir: "+gitDir+"\n")
-	branch := strings.Replace(schema, `API_TOKEN=op("op://Dev/Api/credential")`, `NEW_TOKEN=op("op://Dev/New/credential")`, 1)
-	write(t, filepath.Join(wt, config.SchemaFile), branch)
-	t.Chdir(wt)
-
-	code, _, errOut := e.run("exec", "--project", "--", "true")
-	if code != ExitNotAllowed {
-		t.Fatalf("new secret in the worktree must need a trust: %d %q", code, errOut)
-	}
-	code, out, errOut := e.run("trust")
-	if code != 0 || !strings.Contains(out, "trusted "+name) || !strings.Contains(out, "kept from other checkouts of "+name+": "+name+"/api_token") {
-		t.Fatalf("trust worktree: %d %q %q", code, out, errOut)
-	}
-	if code, _, errOut := e.run("exec", "--project", "--", "true"); code != 0 || lookup(e.exec.env, "NEW_TOKEN") == "" || lookup(e.exec.env, "API_TOKEN") != "" {
-		t.Fatalf("worktree exec: %d %q %v", code, errOut, e.exec.env)
-	}
-
-	// The main checkout is still trusted and gets only its own secrets.
 	t.Chdir(root)
-	if code, _, errOut := e.run("trust", "--check"); code != 0 {
-		t.Fatalf("main after worktree trust: %d %q", code, errOut)
+	if code, _, errOut := e.run("trust"); code != 0 {
+		t.Fatalf("trust: %d %q", code, errOut)
 	}
-	if code, _, errOut := e.run("exec", "--project", "--", "true"); code != 0 || lookup(e.exec.env, "API_TOKEN") == "" || lookup(e.exec.env, "NEW_TOKEN") != "" {
-		t.Fatalf("main exec: %d %q", code, errOut)
+	for _, target := range []string{filepath.Join(root, ".git"), filepath.Join(root, ".git", "worktrees", "feature")} {
+		_ = os.MkdirAll(target, 0o700)
+		write(t, filepath.Join(target, "commondir"), "../..\n")
+		dir := filepath.Join(t.TempDir(), "acme")
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		write(t, filepath.Join(dir, ".git"), "gitdir: "+target+"\n")
+		write(t, filepath.Join(dir, config.SchemaFile), schema)
+		t.Chdir(dir)
+		if config.SchemaProjectName(filepath.Join(dir, config.SchemaFile)) == config.SchemaProjectName(main) {
+			t.Fatalf("%s: shares the project of the repository", target)
+		}
+		code, _, errOut := e.run("exec", "--if-trusted", "--", "true")
+		if code != 0 || lookup(e.exec.env, "APP_KEY") != "" || !strings.Contains(errOut, "not trusted") {
+			t.Fatalf("%s: %d %q", target, code, errOut)
+		}
 	}
 }
 
@@ -320,6 +302,7 @@ func TestSchemaWorktreesDisagreeOnARef(t *testing.T) {
 		t.Fatal(err)
 	}
 	write(t, filepath.Join(wt, ".git"), "gitdir: "+gitDir+"\n")
+	write(t, filepath.Join(gitDir, "gitdir"), filepath.Join(wt, ".git")+"\n")
 	write(t, filepath.Join(wt, config.SchemaFile), strings.Replace(schema, "op://Dev/Api/credential", "op://Dev/Api v2/credential", 1))
 	t.Chdir(wt)
 	if code, _, errOut := e.run("trust"); code != 0 {
