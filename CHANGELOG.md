@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.3.0 - 2026-11-10
+
+This release lets sefko serve 1Password secrets from a `.env.schema` file to varlock. varlock gets the values from sefko memory, so it does not call 1Password on each run.
+
+### New features
+
+- `sefko trust` now reads `.env.schema` when a directory has no `.sefko.toml`, so varlock projects need no extra file. Use `sefko exec --if-trusted` or `sefko.lib.mkVarlock` to run varlock through sefko.
+
 ## v0.2.0 - 2026-10-23
 
 This release lets a repository declare the secrets its tools need. It also installs shell completions with the Nix package.
