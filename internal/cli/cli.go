@@ -52,6 +52,8 @@ func (e *exitError) Error() string {
 	return e.err.Error()
 }
 
+func (e *exitError) Unwrap() error { return e.err }
+
 func exit(code int, err error) error { return &exitError{code: code, err: err} }
 
 // IO lets tests capture output and replace process exec.
@@ -198,7 +200,7 @@ func (a *app) value(name string) (string, error) {
 	defer cancel()
 	raw, rerr := opread.Read(ctx, cfg.OpPath, sec.Account, sec.Ref)
 	if rerr != nil {
-		return "", exit(ExitOpFailed, errors.New(opread.Describe(rerr)))
+		return "", exit(ExitOpFailed, rerr)
 	}
 	v = string(raw)
 	clear(raw)
@@ -259,25 +261,44 @@ func (a *app) envNames() (map[string]string, error) {
 	return out, nil
 }
 
-type binding struct{ env, alias string }
+type binding struct {
+	env, alias string
+	// optional leaves env unset when the secret cannot be read, so that
+	// the command (varlock) can resolve it itself.
+	optional bool
+	// agentOnly never reads from 1Password directly when the agent is down.
+	agentOnly bool
+}
+
+// projectMode is how exec and env use the nearest project file.
+type projectMode int
+
+const (
+	noProject projectMode = iota
+	withProject
+	ifTrusted
+)
 
 // bindings resolves positional aliases (using their default env names),
-// --env NAME=alias overrides and, with project, the nearest project file.
-func (a *app) bindings(aliases, overrides []string, project bool) ([]binding, error) {
+// --env NAME=alias overrides and the nearest project file.
+func (a *app) bindings(aliases, overrides []string, project projectMode) ([]binding, error) {
 	var out []binding
 	for _, o := range overrides {
 		env, alias, ok := strings.Cut(o, "=")
 		if !ok || env == "" || alias == "" {
 			return nil, exit(ExitUsage, fmt.Errorf("--env %q: want NAME=alias", o))
 		}
-		out = append(out, binding{env, alias})
+		out = append(out, binding{env: env, alias: alias})
 	}
-	if project {
+	switch project {
+	case withProject:
 		bs, err := a.projectBindings()
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, bs...)
+	case ifTrusted:
+		out = append(out, a.optionalProjectBindings()...)
 	}
 	if len(aliases) > 0 {
 		names, err := a.envNames()
@@ -292,10 +313,10 @@ func (a *app) bindings(aliases, overrides []string, project bool) ([]binding, er
 			if env == "" {
 				return nil, exit(ExitUsage, fmt.Errorf("%q has no default env name; use --env NAME=%s", alias, alias))
 			}
-			out = append(out, binding{env, alias})
+			out = append(out, binding{env: env, alias: alias})
 		}
 	}
-	if len(out) == 0 {
+	if len(out) == 0 && project == noProject {
 		return nil, exit(ExitUsage, errors.New("name at least one alias"))
 	}
 	seen := map[string]string{}
@@ -308,24 +329,69 @@ func (a *app) bindings(aliases, overrides []string, project bool) ([]binding, er
 	return out, nil
 }
 
+// resolve reads every binding. An optional binding that fails is left out
+// with a note. When the failure is not about that one item (the agent is
+// down, nobody approved 1Password), the other optional bindings are left
+// out too, because they would fail the same way, one timeout at a time.
 func (a *app) resolve(bs []binding) (map[string]string, error) {
 	vals := map[string]string{}
+	skipped, giveUp := 0, false
 	for _, b := range bs {
-		v, err := a.value(b.alias)
-		if err != nil {
+		if b.optional && giveUp {
+			skipped++
+			continue
+		}
+		v, err := a.lookup(b)
+		if err == nil {
+			vals[b.env] = v
+			continue
+		}
+		if !b.optional {
 			return nil, err
 		}
-		vals[b.env] = v
+		_, _ = fmt.Fprintf(a.io.Stderr, "sefko: %s is not set: %v\n", b.env, err)
+		giveUp = !itemError(err)
+	}
+	if skipped > 0 {
+		_, _ = fmt.Fprintf(a.io.Stderr, "sefko: %d more variables are not set\n", skipped)
 	}
 	return vals, nil
 }
 
+func (a *app) lookup(b binding) (string, error) {
+	if !b.agentOnly {
+		return a.value(b.alias)
+	}
+	v, err := a.client().Get(b.alias)
+	if err != nil {
+		return "", classify(err)
+	}
+	return v, nil
+}
+
+// itemError reports whether err is about one 1Password item (for example
+// one the user cannot read) rather than about the agent or 1Password itself.
+func itemError(err error) bool {
+	var pe *protocol.Error
+	if errors.As(err, &pe) {
+		return pe.Code == protocol.CodeOpFailed
+	}
+	var oe *opread.Error
+	return errors.As(err, &oe)
+}
+
 func (a *app) execCmd() *cobra.Command {
 	var overrides []string
-	var project bool
+	var project, optional bool
 	cmd := &cobra.Command{
-		Use:   "exec [alias...] [--env NAME=alias]... [--project] -- command [args...]",
+		Use:   "exec [alias...] [--env NAME=alias]... [--project | --if-trusted] -- command [args...]",
 		Short: "Run a command with secrets in its environment",
+		Long: "exec runs the command with the named secrets in its environment.\n\n" +
+			"--project adds every secret of the nearest trusted project file. --if-trusted\n" +
+			"does the same, but never stops the command: without a trusted project it\n" +
+			"runs the command unchanged, and it leaves out a secret it cannot read. It\n" +
+			"does not read from 1Password directly when the agent is down. Use it in a\n" +
+			"wrapper, for example around varlock.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			dash := cmd.ArgsLenAtDash()
 			if dash < 0 || dash == len(args) {
@@ -337,7 +403,16 @@ func (a *app) execCmd() *cobra.Command {
 			if err != nil {
 				return exit(ExitError, err)
 			}
-			bs, err := a.bindings(args[:dash], overrides, project)
+			mode := noProject
+			switch {
+			case project && optional:
+				return exit(ExitUsage, errors.New("use --project or --if-trusted, not both"))
+			case project:
+				mode = withProject
+			case optional:
+				mode = ifTrusted
+			}
+			bs, err := a.bindings(args[:dash], overrides, mode)
 			if err != nil {
 				return err
 			}
@@ -349,7 +424,8 @@ func (a *app) execCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&overrides, "env", nil, "set NAME to the value of alias (repeatable)")
-	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+config.ProjectFile)
+	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+projectFiles)
+	cmd.Flags().BoolVar(&optional, "if-trusted", false, "like --project, but run the command unchanged when the project is not trusted")
 	return cmd
 }
 
@@ -378,7 +454,11 @@ func (a *app) envCmd() *cobra.Command {
 			if shell != "fish" && shell != "posix" {
 				return exit(ExitUsage, fmt.Errorf("--shell must be fish or posix, not %q", shell))
 			}
-			bs, err := a.bindings(args, overrides, project)
+			mode := noProject
+			if project {
+				mode = withProject
+			}
+			bs, err := a.bindings(args, overrides, mode)
 			if err != nil {
 				return err
 			}
@@ -387,6 +467,9 @@ func (a *app) envCmd() *cobra.Command {
 				return err
 			}
 			for _, b := range bs {
+				if _, ok := vals[b.env]; !ok {
+					continue
+				}
 				var line string
 				if shell == "fish" {
 					line = fmt.Sprintf("set -gx %s %s;\n", b.env, fishQuote(vals[b.env]))
@@ -402,9 +485,11 @@ func (a *app) envCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&shell, "shell", "fish", "fish or posix")
 	cmd.Flags().StringArrayVar(&overrides, "env", nil, "export NAME with the value of alias (repeatable)")
-	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+config.ProjectFile)
+	cmd.Flags().BoolVarP(&project, "project", "p", false, "add every secret of the nearest trusted "+projectFiles)
 	return cmd
 }
+
+const projectFiles = config.ProjectFile + " or " + config.SchemaFile
 
 func fishQuote(s string) string {
 	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(s) + "'"

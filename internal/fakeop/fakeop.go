@@ -22,6 +22,7 @@ const (
 	envExit    = "SEFKO_FAKE_OP_EXIT"
 	envStderr  = "SEFKO_FAKE_OP_STDERR"
 	envCounter = "SEFKO_FAKE_OP_COUNTER"
+	envFailRef = "SEFKO_FAKE_OP_FAIL_REF"
 )
 
 // Main runs the fake if requested. It returns only when the process is not a
@@ -51,6 +52,10 @@ func run(args []string) int {
 	}
 	if msg := os.Getenv(envStderr); msg != "" {
 		fmt.Fprintln(os.Stderr, msg)
+	}
+	if bad := os.Getenv(envFailRef); bad != "" && strings.Contains(ref, bad) {
+		fmt.Fprintf(os.Stderr, "[ERROR] %q isn't an item in this vault\n", ref)
+		return 1
 	}
 	if code, err := strconv.Atoi(os.Getenv(envExit)); err == nil && code != 0 {
 		return code
@@ -89,7 +94,7 @@ func Setup(t testing.TB) *Fake {
 	f := &Fake{t: t, Path: exe, counter: t.TempDir() + "/calls"}
 	t.Setenv(envMode, "1")
 	t.Setenv(envCounter, f.counter)
-	for _, k := range []string{envValue, envFile, envDelay, envExit, envStderr} {
+	for _, k := range []string{envValue, envFile, envDelay, envExit, envStderr, envFailRef} {
 		t.Setenv(k, "")
 	}
 	return f
@@ -98,6 +103,10 @@ func Setup(t testing.TB) *Fake {
 func (f *Fake) SetValue(v string)        { f.t.Setenv(envValue, v) }
 func (f *Fake) SetValueFile(p string)    { f.t.Setenv(envFile, p) }
 func (f *Fake) SetDelay(d time.Duration) { f.t.Setenv(envDelay, d.String()) }
+
+// FailRef makes every reference that contains s fail as a missing item.
+func (f *Fake) FailRef(s string) { f.t.Setenv(envFailRef, s) }
+
 func (f *Fake) SetExit(code int, msg string) {
 	f.t.Setenv(envExit, strconv.Itoa(code))
 	f.t.Setenv(envStderr, msg)

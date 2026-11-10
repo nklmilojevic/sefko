@@ -24,6 +24,7 @@
           version = self.shortRev or self.dirtyShortRev or "dev";
         };
         sefkoWrap = final.callPackage ./nix/wrap.nix { };
+        sefkoVarlock = final.callPackage ./nix/varlock.nix { };
         gh-sefko = final.callPackage ./nix/gh.nix { };
       };
 
@@ -46,6 +47,10 @@
       # sefko.lib.mkWrapper pkgs { package = pkgs.glab; secret = "gitlab"; }
       lib.mkWrapper = pkgs: (pkgs.extend overlay).sefkoWrap;
 
+      # Wraps varlock so it gets the secrets of trusted projects from sefko:
+      # sefko.lib.mkVarlock pkgs { package = varlock; }
+      lib.mkVarlock = pkgs: (pkgs.extend overlay).sefkoVarlock;
+
       homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
 
       packages = forAllSystems (pkgs: {
@@ -65,6 +70,7 @@
         sefko = pkgs.sefko;
         gh = pkgs.gh-sefko;
         hm-module = import ./nix/tests/hm-module.nix { inherit pkgs self home-manager; };
+        varlock = import ./nix/tests/varlock.nix { inherit pkgs; };
       });
 
       # Every development tool comes from here; `just` lists the tasks.
