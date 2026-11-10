@@ -432,12 +432,14 @@ func SchemaProjectName(schemaPath string) string {
 
 // repoRoot returns the working tree that contains dir and the directory of
 // the main repository. For a linked worktree the two differ. Outside a
-// repository both are dir.
+// repository both are dir. A .git that is a symlink is a repository of its
+// own: a symlink to the .git file of a real worktree would pass the backlink
+// check in worktreeRepo.
 func repoRoot(dir string) (root, repo string) {
 	for d := dir; ; {
 		gitPath := filepath.Join(d, ".git")
-		if fi, err := os.Stat(gitPath); err == nil {
-			if fi.IsDir() {
+		if fi, err := os.Lstat(gitPath); err == nil {
+			if !fi.Mode().IsRegular() {
 				return d, d
 			}
 			return d, worktreeRepo(d, gitPath)

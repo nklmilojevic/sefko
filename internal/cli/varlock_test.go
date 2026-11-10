@@ -279,6 +279,36 @@ func TestSchemaForgedWorktree(t *testing.T) {
 			t.Fatalf("%s: %d %q", target, code, errOut)
 		}
 	}
+
+	// A .git symlink to the .git file of a registered worktree.
+	gitDir := filepath.Join(root, ".git", "worktrees", "real")
+	if err := os.MkdirAll(gitDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	wt := filepath.Join(t.TempDir(), "real")
+	if err := os.MkdirAll(wt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(gitDir, "commondir"), "../..\n")
+	write(t, filepath.Join(gitDir, "gitdir"), filepath.Join(wt, ".git")+"\n")
+	write(t, filepath.Join(wt, ".git"), "gitdir: "+gitDir+"\n")
+	write(t, filepath.Join(wt, config.SchemaFile), schema)
+	if config.SchemaProjectName(filepath.Join(wt, config.SchemaFile)) != config.SchemaProjectName(main) {
+		t.Fatal("the registered worktree does not share the project")
+	}
+	dir := filepath.Join(t.TempDir(), "acme")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(wt, ".git"), filepath.Join(dir, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, config.SchemaFile), schema)
+	t.Chdir(dir)
+	code, _, errOut := e.run("exec", "--if-trusted", "--", "true")
+	if code != 0 || lookup(e.exec.env, "APP_KEY") != "" || !strings.Contains(errOut, "not trusted") {
+		t.Fatalf("symlinked .git: %d %q", code, errOut)
+	}
 }
 
 // Two worktrees can point one variable at different items. Each keeps its

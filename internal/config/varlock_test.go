@@ -147,6 +147,13 @@ func TestSchemaProjectName(t *testing.T) {
 		writeFile(t, filepath.Join(dir, SchemaFile), "")
 		forged[label] = dir
 	}
+	// A .git symlink to the .git file of the real worktree.
+	linked := filepath.Join(base, "forged", "symlink", "My.Repo")
+	writeFile(t, filepath.Join(linked, SchemaFile), "")
+	if err := os.Symlink(filepath.Join(wt, ".git"), filepath.Join(linked, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	forged["as a symlink to the worktree"] = linked
 
 	// Another repository with the same name.
 	twin := filepath.Join(base, "fork", "My.Repo")
