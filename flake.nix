@@ -53,11 +53,20 @@
 
       homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
 
-      packages = forAllSystems (pkgs: {
-        default = pkgs.sefko;
-        sefko = pkgs.sefko;
-        gh = pkgs.gh-sefko;
-      });
+      packages =
+        forAllSystems
+          (pkgs: {
+            default = pkgs.sefko;
+            sefko = pkgs.sefko;
+            gh = pkgs.gh-sefko;
+          })
+        // {
+          x86_64-linux.default =
+            (import nixpkgs {
+              system = "x86_64-linux";
+              overlays = [ overlay ];
+            }).sefko;
+        };
 
       apps = forAllSystems (pkgs: {
         default = {
