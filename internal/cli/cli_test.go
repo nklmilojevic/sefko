@@ -288,3 +288,22 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("%d %q", code, out)
 	}
 }
+
+func TestFallbackServiceAccount(t *testing.T) {
+	e := setup(t, false)
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte("ops_fallback\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fmt.Sprintf("op_path = %q\nservice_account_token_file = %q\n\n[secrets.github]\nref = \"op://Studio/GitHub/token\"\n", e.op.Path, tok)
+	if err := os.WriteFile(e.cfg, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := e.run("get", "github")
+	if code != 0 || out != "value-of:op://Studio/GitHub/token" || !strings.Contains(errOut, fallbackWarning) {
+		t.Fatalf("code=%d out=%q err=%q", code, out, errOut)
+	}
+	if calls := e.op.Calls(); len(calls) != 1 || calls[0] != "sa:ops_fallback op://Studio/GitHub/token" {
+		t.Fatalf("calls: %q", calls)
+	}
+}

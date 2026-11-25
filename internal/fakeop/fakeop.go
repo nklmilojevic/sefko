@@ -35,15 +35,33 @@ func Main() {
 }
 
 func run(args []string) int {
-	if len(args) != 5 || args[0] != "read" || args[1] != "--account" || args[3] != "--no-newline" {
+	var caller, ref string
+	switch {
+	case len(args) == 5 && args[0] == "read" && args[1] == "--account" && args[3] == "--no-newline":
+		if os.Getenv("OP_SERVICE_ACCOUNT_TOKEN") != "" {
+			fmt.Fprintln(os.Stderr, "fake op: --account cannot be used with OP_SERVICE_ACCOUNT_TOKEN")
+			return 2
+		}
+		caller, ref = args[2], args[4]
+	case len(args) == 3 && args[0] == "read" && args[1] == "--no-newline":
+		tok := os.Getenv("OP_SERVICE_ACCOUNT_TOKEN")
+		if tok == "" {
+			fmt.Fprintln(os.Stderr, "fake op: missing OP_SERVICE_ACCOUNT_TOKEN")
+			return 2
+		}
+		if os.Getenv("OP_CONNECT_HOST") != "" || os.Getenv("OP_CONNECT_TOKEN") != "" {
+			fmt.Fprintln(os.Stderr, "fake op: OP_CONNECT_* must not be set with OP_SERVICE_ACCOUNT_TOKEN")
+			return 2
+		}
+		caller, ref = "sa:"+tok, args[2]
+	default:
 		fmt.Fprintf(os.Stderr, "fake op: unexpected args %q\n", args)
 		return 2
 	}
-	ref := args[4]
 	if p := os.Getenv(envCounter); p != "" {
 		f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err == nil {
-			_, _ = f.WriteString(args[2] + " " + ref + "\n")
+			_, _ = f.WriteString(caller + " " + ref + "\n")
 			_ = f.Close()
 		}
 	}
@@ -94,7 +112,10 @@ func Setup(t testing.TB) *Fake {
 	f := &Fake{t: t, Path: exe, counter: t.TempDir() + "/calls"}
 	t.Setenv(envMode, "1")
 	t.Setenv(envCounter, f.counter)
-	for _, k := range []string{envValue, envFile, envDelay, envExit, envStderr, envFailRef} {
+	for _, k := range []string{
+		envValue, envFile, envDelay, envExit, envStderr, envFailRef,
+		"OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN",
+	} {
 		t.Setenv(k, "")
 	}
 	return f

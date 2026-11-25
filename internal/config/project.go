@@ -46,7 +46,7 @@ func ParseProject(data []byte) (*Project, error) {
 		if s.Account == "" {
 			s.Account = p.Account
 		}
-		if err := checkSecret(alias, s); err != nil {
+		if err := checkSecret(alias, s, true); err != nil {
 			return nil, err
 		}
 		p.Secrets[alias] = s

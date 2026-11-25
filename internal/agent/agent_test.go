@@ -744,3 +744,60 @@ func TestListenSafety(t *testing.T) {
 		t.Fatalf("live agent: %v", err)
 	}
 }
+
+func TestServiceAccountFetchAndReload(t *testing.T) {
+	tokenDir := t.TempDir()
+	tok1 := filepath.Join(tokenDir, "tok1")
+	tok2 := filepath.Join(tokenDir, "tok2")
+	if err := os.WriteFile(tok1, []byte("ops_one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tok2, []byte("ops_two\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	h := start(t, fmt.Sprintf("service_account_token_file = %q\n", tok1))
+	h.writeConfig(fmt.Sprintf("op_path = %q\nservice_account_token_file = %q\n\n[secrets.github]\nref = \"op://Studio/GitHub/token\"\nenv = \"GH_TOKEN\"\n", h.op.Path, tok1))
+	if err := h.agent.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if v := h.get("github"); v != "value-of:op://Studio/GitHub/token" {
+		t.Fatalf("got %q", v)
+	}
+
+	// Trusted projects that declare an account still authenticate via the
+	// configured service account on a headless host.
+	trusted := config.TrustedPath(h.cfg, "acme")
+	if err := os.MkdirAll(filepath.Dir(trusted), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	project := "project = \"acme\"\naccount = \"team.example\"\n[secrets.app-key]\nref = \"op://Dev/App/APP_KEY\"\nenv = \"APP_KEY\"\n"
+	if err := os.WriteFile(trusted, []byte(project), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.agent.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if v := h.get("acme/app-key"); v != "value-of:op://Dev/App/APP_KEY" {
+		t.Fatalf("got %q", v)
+	}
+
+	// Switching service_account_token_file wipes cached values.
+	h.writeConfig(fmt.Sprintf("op_path = %q\nservice_account_token_file = %q\n\n[secrets.github]\nref = \"op://Studio/GitHub/token\"\nenv = \"GH_TOKEN\"\n", h.op.Path, tok2))
+	if err := h.agent.Reload(); err != nil {
+		t.Fatal(err)
+	}
+	if h.entry("github").Cached || h.entry("acme/app-key").Cached {
+		t.Fatal("changing service_account_token_file did not wipe cache")
+	}
+	h.get("github")
+
+	want := []string{
+		"sa:ops_one op://Studio/GitHub/token",
+		"sa:ops_one op://Dev/App/APP_KEY",
+		"sa:ops_two op://Studio/GitHub/token",
+	}
+	if calls := h.op.Calls(); strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls:\n%v\nwant:\n%v", calls, want)
+	}
+}

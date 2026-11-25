@@ -156,10 +156,11 @@ Use Nix with Home Manager, or use Homebrew.
 | `enable` | `false` | Installs sefko and starts the agent. |
 | `package` | sefko from this flake | The sefko package. |
 | `opPackage` | `pkgs._1password-cli` | The package that has the `op` command. |
+| `serviceAccountTokenFile` | `null` | Path to a `0600`/`0400` file with a 1Password Service Account token. When set, `sefko` authenticates without the 1Password app and `secrets.<alias>.account` is optional. |
 | `ttl` | `"168h"` | The time that the agent keeps a value. The time starts when the agent reads the value. |
 | `fetchTimeout` | `"60s"` | The maximum time to wait for your approval in 1Password. |
 | `secrets.<alias>.ref` | (required) | The 1Password reference. It must start with `op://`. |
-| `secrets.<alias>.account` | (required) | The 1Password account. |
+| `secrets.<alias>.account` | `null` | The 1Password account. Required unless `serviceAccountTokenFile` is set. |
 | `secrets.<alias>.env` | `null` | The default variable name for `sefko exec` and `sefko env`. |
 | `secrets.<alias>.validate` | `null` | An HTTP check for the secret. See [Validate a secret](#validate-a-secret). |
 | `wrappers.<program>.package` | (required) | The package that has the program. See [Wrap a command](#wrap-a-command). |
@@ -173,6 +174,30 @@ The module writes the configuration to `~/.config/sefko/config.toml`.
 This file contains only references, not values.
 When you change only the configuration, the agent reads the new file in less than 5 seconds.
 It keeps the values that did not change.
+
+### Headless Macs and service accounts
+
+On a remote Mac without an interactive 1Password approval dialog, authenticate `sefko` with a 1Password Service Account instead of the desktop app:
+
+1. Put the service account token in a file that only you can read (`chmod 600 ~/.config/sefko/op-service-account-token`).
+2. Point `sefko` at the file:
+
+   ```nix
+   programs.sefko = {
+     enable = true;
+     serviceAccountTokenFile = "~/.config/sefko/op-service-account-token";
+     secrets.github = {
+       ref = "op://Studio/GitHub Personal Access Token/token";
+       env = "GH_TOKEN";
+     };
+   };
+   ```
+
+   Without Nix, set `service_account_token_file = "~/.config/sefko/op-service-account-token"` at the top of `~/.config/sefko/config.toml`.
+
+When `service_account_token_file` is set, `sefko` omits `--account` and passes `OP_SERVICE_ACCOUNT_TOKEN` only to the `op` child process it runs.
+Shells and coding agents never see the service account token.
+Because 1Password Service Accounts cannot access the built-in `Private` vault, place the secrets the host needs in a dedicated custom vault.
 
 ## Commands
 

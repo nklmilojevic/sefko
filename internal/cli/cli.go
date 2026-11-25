@@ -198,7 +198,10 @@ func (a *app) value(name string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.FetchTimeoutDuration())
 	defer cancel()
-	raw, rerr := opread.Read(ctx, cfg.OpPath, sec.Account, sec.Ref)
+	raw, rerr := opread.Read(ctx, cfg.OpPath, opread.Auth{
+		Account:   sec.Account,
+		TokenFile: cfg.ServiceAccountTokenFile,
+	}, sec.Ref)
 	if rerr != nil {
 		return "", exit(ExitOpFailed, rerr)
 	}
