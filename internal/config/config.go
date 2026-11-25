@@ -76,6 +76,11 @@ type Config struct {
 func (c *Config) TTLDuration() time.Duration          { return time.Duration(c.TTL) }
 func (c *Config) FetchTimeoutDuration() time.Duration { return time.Duration(c.FetchTimeout) }
 
+// ProjectOptions returns the validation rules for trusted projects under c.
+func (c *Config) ProjectOptions() ProjectOptions {
+	return ProjectOptions{AllowEmptyAccount: c.ServiceAccountTokenFile != ""}
+}
+
 // Names returns the aliases in sorted order.
 func (c *Config) Names() []string {
 	names := make([]string, 0, len(c.Secrets))

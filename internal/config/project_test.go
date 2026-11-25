@@ -29,7 +29,7 @@ format = "Bearer {}"
 `
 
 func TestParseProject(t *testing.T) {
-	p, err := ParseProject([]byte(sampleProject))
+	p, err := ParseProject([]byte(sampleProject), ProjectOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,23 +58,75 @@ func TestParseProjectInvalid(t *testing.T) {
 		"insecure url": "project = \"p\"\naccount = \"a\"\n[secrets.a]\nref = \"op://x\"\n[secrets.a.validate]\nurl = \"http://example.com\"\nheader = \"H\"\n",
 	}
 	for name, in := range cases {
-		if _, err := ParseProject([]byte(in)); err == nil {
+		if _, err := ParseProject([]byte(in), ProjectOptions{}); err == nil {
 			t.Errorf("%s: expected error", name)
 		}
 	}
 }
 
+func TestParseProjectAccountlessInServiceAccountMode(t *testing.T) {
+	const accountless = "project = \"headless\"\n[secrets.api-key]\nref = \"op://Studio/API/key\"\nenv = \"API_KEY\"\n"
+	if _, err := ParseProject([]byte(accountless), ProjectOptions{}); err == nil {
+		t.Fatal("accountless project accepted without service account mode")
+	}
+	p, err := ParseProject([]byte(accountless), ProjectOptions{AllowEmptyAccount: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Secrets["api-key"].Account != "" {
+		t.Fatalf("unexpected account: %q", p.Secrets["api-key"].Account)
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.toml")
+	writeFile(t, TrustedPath(cfgPath, "headless"), accountless)
+
+	// In service-account mode, Files.Parse loads the accountless trusted project.
+	writeFile(t, cfgPath, "service_account_token_file = \"/tmp/tok\"\n")
+	f, err := ReadFiles(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, warnings, err := f.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 0 {
+		t.Fatalf("unexpected warnings: %v", warnings)
+	}
+	if _, ok := cfg.Secrets["headless/api-key"]; !ok {
+		t.Fatalf("missing accountless project secret: %v", cfg.Names())
+	}
+
+	// Without service_account_token_file, the accountless project is rejected with a warning.
+	writeFile(t, cfgPath, "")
+	f, err = ReadFiles(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, warnings, err = f.Parse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want 1 warning, got %v", warnings)
+	}
+	if _, ok := cfg.Secrets["headless/api-key"]; ok {
+		t.Fatal("accountless project loaded without service_account_token_file")
+	}
+}
+
 func TestProjectEqual(t *testing.T) {
-	a, _ := ParseProject([]byte(sampleProject))
-	b, _ := ParseProject([]byte("# a comment\n" + sampleProject))
+	a, _ := ParseProject([]byte(sampleProject), ProjectOptions{})
+	b, _ := ParseProject([]byte("# a comment\n"+sampleProject), ProjectOptions{})
 	if !a.Equal(b) {
 		t.Fatal("a comment changed the meaning")
 	}
-	c, _ := ParseProject([]byte(strings.Replace(sampleProject, "APP_KEY\"\nenv", "APP_KEY2\"\nenv", 1)))
+	c, _ := ParseProject([]byte(strings.Replace(sampleProject, "APP_KEY\"\nenv", "APP_KEY2\"\nenv", 1)), ProjectOptions{})
 	if a.Equal(c) {
 		t.Fatal("a changed ref compared equal")
 	}
-	d, _ := ParseProject([]byte(strings.Replace(sampleProject, "https://api.github.com/user", "https://evil.example/", 1)))
+	d, _ := ParseProject([]byte(strings.Replace(sampleProject, "https://api.github.com/user", "https://evil.example/", 1)), ProjectOptions{})
 	if a.Equal(d) {
 		t.Fatal("a changed validator compared equal")
 	}

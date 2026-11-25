@@ -196,8 +196,9 @@ On a remote Mac without an interactive 1Password approval dialog, authenticate `
    Without Nix, set `service_account_token_file = "~/.config/sefko/op-service-account-token"` at the top of `~/.config/sefko/config.toml`.
 
 When `service_account_token_file` is set, `sefko` omits `--account` and passes `OP_SERVICE_ACCOUNT_TOKEN` only to the `op` child process it runs.
-Shells and coding agents never see the service account token.
-Because 1Password Service Accounts cannot access the built-in `Private` vault, place the secrets the host needs in a dedicated custom vault.
+`sefko` does not export the token to your shell or to commands launched through `sefko`.
+However, because the `0600` token file is owned by your user, any other process running as the same macOS user (including shells and coding agents) can still read the file directly.
+If you need isolation from other workloads, run them as a separate OS user, and keep the service account scoped read-only to a dedicated custom vault (1Password Service Accounts cannot access the built-in `Private` vault).
 
 ## Commands
 

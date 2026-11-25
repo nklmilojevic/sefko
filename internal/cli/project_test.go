@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,5 +150,55 @@ func TestTrustErrors(t *testing.T) {
 	}
 	if _, err := os.Stat(e.cfg); err != nil {
 		t.Fatalf("config touched: %v", err)
+	}
+}
+
+func TestTrustAccountlessProjectInServiceAccountMode(t *testing.T) {
+	const accountless = `project = "headless"
+
+[secrets.api-key]
+ref = "op://Studio/API/key"
+env = "API_KEY"
+`
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, config.ProjectFile), []byte(accountless), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(root)
+
+	// Without service_account_token_file, an accountless project is rejected.
+	desktop := setup(t, true)
+	if code, _, _ := desktop.run("trust"); code != ExitError {
+		t.Fatalf("accountless project trusted in app-auth mode: %d", code)
+	}
+
+	// With service_account_token_file, trust / check / exec / untrust all succeed.
+	e := setup(t, true)
+	tok := filepath.Join(t.TempDir(), "token")
+	if err := os.WriteFile(tok, []byte("ops_proj\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := fmt.Sprintf("op_path = %q\nservice_account_token_file = %q\n", e.op.Path, tok)
+	if err := os.WriteFile(e.cfg, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errOut := e.run("trust")
+	if code != 0 || !strings.Contains(out, "headless/api-key") {
+		t.Fatalf("trust: %d %q %q", code, out, errOut)
+	}
+	if code, _, errOut := e.run("trust", "--check"); code != 0 {
+		t.Fatalf("trust --check: %d %q", code, errOut)
+	}
+	if code, _, errOut := e.run("exec", "--project", "--", "true"); code != 0 {
+		t.Fatalf("exec --project: %d %q", code, errOut)
+	}
+	if v := lookup(e.exec.env, "API_KEY"); v != "value-of:op://Studio/API/key" {
+		t.Fatalf("API_KEY=%q", v)
+	}
+	if calls := e.op.Calls(); len(calls) != 1 || calls[0] != "sa:ops_proj op://Studio/API/key" {
+		t.Fatalf("calls: %q", calls)
+	}
+	if code, _, errOut := e.run("untrust"); code != 0 {
+		t.Fatalf("untrust: %d %q", code, errOut)
 	}
 }

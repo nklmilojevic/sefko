@@ -765,8 +765,8 @@ func TestServiceAccountFetchAndReload(t *testing.T) {
 		t.Fatalf("got %q", v)
 	}
 
-	// Trusted projects that declare an account still authenticate via the
-	// configured service account on a headless host.
+	// Trusted projects work both with an account (shared repos) and without
+	// one (headless service-account repos).
 	trusted := config.TrustedPath(h.cfg, "acme")
 	if err := os.MkdirAll(filepath.Dir(trusted), 0o700); err != nil {
 		t.Fatal(err)
@@ -775,10 +775,17 @@ func TestServiceAccountFetchAndReload(t *testing.T) {
 	if err := os.WriteFile(trusted, []byte(project), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	headlessProject := "project = \"headless\"\n[secrets.api-key]\nref = \"op://Studio/API/key\"\nenv = \"API_KEY\"\n"
+	if err := os.WriteFile(config.TrustedPath(h.cfg, "headless"), []byte(headlessProject), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := h.agent.Reload(); err != nil {
 		t.Fatal(err)
 	}
 	if v := h.get("acme/app-key"); v != "value-of:op://Dev/App/APP_KEY" {
+		t.Fatalf("got %q", v)
+	}
+	if v := h.get("headless/api-key"); v != "value-of:op://Studio/API/key" {
 		t.Fatalf("got %q", v)
 	}
 
@@ -787,7 +794,7 @@ func TestServiceAccountFetchAndReload(t *testing.T) {
 	if err := h.agent.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if h.entry("github").Cached || h.entry("acme/app-key").Cached {
+	if h.entry("github").Cached || h.entry("acme/app-key").Cached || h.entry("headless/api-key").Cached {
 		t.Fatal("changing service_account_token_file did not wipe cache")
 	}
 	h.get("github")
@@ -795,6 +802,7 @@ func TestServiceAccountFetchAndReload(t *testing.T) {
 	want := []string{
 		"sa:ops_one op://Studio/GitHub/token",
 		"sa:ops_one op://Dev/App/APP_KEY",
+		"sa:ops_one op://Studio/API/key",
 		"sa:ops_two op://Studio/GitHub/token",
 	}
 	if calls := h.op.Calls(); strings.Join(calls, "\n") != strings.Join(want, "\n") {
