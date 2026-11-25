@@ -37,6 +37,27 @@ let
     ];
   };
   cfg = hm.config;
+  hmServiceAccount = home-manager.lib.homeManagerConfiguration {
+    inherit pkgs;
+    modules = [
+      self.homeManagerModules.default
+      {
+        home.username = "test";
+        home.homeDirectory = "/Users/test";
+        home.stateVersion = "26.05";
+        programs.sefko = {
+          enable = true;
+          opPackage = pkgs.writeShellScriptBin "op" "exit 1";
+          serviceAccountTokenFile = "/Users/test/.config/sefko/op-service-account-token";
+          secrets.github = {
+            ref = "op://Studio/GitHub Personal Access Token/token";
+            env = "GH_TOKEN";
+          };
+        };
+      }
+    ];
+  };
+  saCfg = hmServiceAccount.config;
   args = cfg.launchd.agents.sefko.config.ProgramArguments;
   wrapped = pkgs.lib.findFirst (p: pkgs.lib.hasPrefix "tool-sefko" (p.name or "")) null cfg.home.packages;
   expectedArgs = [
@@ -58,5 +79,7 @@ pkgs.runCommand "sefko-hm-module-check" { nativeBuildInputs = [ pkgs.diffutils ]
   diff -u ${./config.golden.toml} got.toml
   grep -qF -- "${pkgs.lib.getExe cfg.programs.sefko.package}" ${wrapped}/bin/tool
   grep -qF -- 'wrap github --bypass GITHUB_TOKEN --no-retry -- ${tool}/bin/tool' ${wrapped}/bin/tool
+  grep -q '^service_account_token_file = "/Users/test/.config/sefko/op-service-account-token"$' ${saCfg.xdg.configFile."sefko/config.toml".source}
+  ! grep -q '^account =' ${saCfg.xdg.configFile."sefko/config.toml".source}
   touch $out
 ''

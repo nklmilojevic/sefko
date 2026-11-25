@@ -99,7 +99,7 @@ func ParseSchema(name string, data []byte) (*Project, []string, error) {
 	}
 	// Parse the encoded form, so the project has the same checks and
 	// defaults as the trusted copy that the agent reads.
-	out, err := ParseProject(data)
+	out, err := ParseProject(data, ProjectOptions{})
 	return out, notes, err
 }
 

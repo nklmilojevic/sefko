@@ -66,6 +66,7 @@ func TestInvalid(t *testing.T) {
 		"validate http":   "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"http://api.github.com/user\"\nheader = \"H\"\n",
 		"validate fmt":    "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"https://x\"\nheader = \"H\"\nformat = \"Bearer\"\n",
 		"no header":       "[secrets.a]\nref = \"op://x\"\naccount = \"a\"\n[secrets.a.validate]\nurl = \"https://x\"\n",
+		"relative token":  "service_account_token_file = \"relative/token\"\n[secrets.a]\nref = \"op://x\"\n",
 		"not toml at all": "[[[",
 	}
 	for name, in := range cases {
@@ -103,5 +104,19 @@ func TestDefaultPath(t *testing.T) {
 	t.Setenv("SEFKO_CONFIG", "/x.toml")
 	if got := DefaultPath(); got != "/x.toml" {
 		t.Fatal(got)
+	}
+}
+
+func TestServiceAccountTokenFile(t *testing.T) {
+	t.Setenv("HOME", "/Users/alice")
+	c, err := Parse([]byte("service_account_token_file = \"~/.config/sefko/token\"\n[secrets.github]\nref = \"op://Studio/GitHub/token\"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ServiceAccountTokenFile != "/Users/alice/.config/sefko/token" {
+		t.Fatalf("got %q", c.ServiceAccountTokenFile)
+	}
+	if c.Secrets["github"].Account != "" {
+		t.Fatalf("unexpected account: %q", c.Secrets["github"].Account)
 	}
 }

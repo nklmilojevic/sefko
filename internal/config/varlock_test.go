@@ -89,7 +89,7 @@ func TestParseSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	back, err := ParseProject(data)
+	back, err := ParseProject(data, ProjectOptions{})
 	if err != nil || !back.Equal(p) {
 		t.Fatalf("round trip: %v\n%s", err, data)
 	}

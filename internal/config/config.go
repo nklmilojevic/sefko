@@ -66,14 +66,20 @@ func (s Secret) SameSource(o Secret) bool {
 }
 
 type Config struct {
-	OpPath       string            `toml:"op_path"`
-	TTL          Duration          `toml:"ttl"`
-	FetchTimeout Duration          `toml:"fetch_timeout"`
-	Secrets      map[string]Secret `toml:"secrets"`
+	OpPath                  string            `toml:"op_path"`
+	ServiceAccountTokenFile string            `toml:"service_account_token_file"`
+	TTL                     Duration          `toml:"ttl"`
+	FetchTimeout            Duration          `toml:"fetch_timeout"`
+	Secrets                 map[string]Secret `toml:"secrets"`
 }
 
 func (c *Config) TTLDuration() time.Duration          { return time.Duration(c.TTL) }
 func (c *Config) FetchTimeoutDuration() time.Duration { return time.Duration(c.FetchTimeout) }
+
+// ProjectOptions returns the validation rules for trusted projects under c.
+func (c *Config) ProjectOptions() ProjectOptions {
+	return ProjectOptions{AllowEmptyAccount: c.ServiceAccountTokenFile != ""}
+}
 
 // Names returns the aliases in sorted order.
 func (c *Config) Names() []string {
@@ -123,10 +129,34 @@ func Parse(data []byte) (*Config, error) {
 	if c.FetchTimeout == 0 {
 		c.FetchTimeout = Duration(DefaultFetchTimeout)
 	}
+	if c.ServiceAccountTokenFile != "" {
+		expanded, err := expandHome(c.ServiceAccountTokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("service_account_token_file: %w", err)
+		}
+		if !filepath.IsAbs(expanded) {
+			return nil, fmt.Errorf("service_account_token_file %q must be an absolute path", c.ServiceAccountTokenFile)
+		}
+		c.ServiceAccountTokenFile = expanded
+	}
 	if err := c.check(); err != nil {
 		return nil, err
 	}
 	return &c, nil
+}
+
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
 }
 
 // decodeStrict decodes TOML into v and rejects keys that v has no field for.
@@ -162,22 +192,23 @@ func (c *Config) check() error {
 	if c.FetchTimeout < 0 {
 		return errors.New("fetch_timeout must be positive")
 	}
+	requireAccount := c.ServiceAccountTokenFile == ""
 	for _, name := range c.Names() {
-		if err := checkSecret(name, c.Secrets[name]); err != nil {
+		if err := checkSecret(name, c.Secrets[name], requireAccount); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func checkSecret(name string, s Secret) error {
+func checkSecret(name string, s Secret, requireAccount bool) error {
 	if !aliasRe.MatchString(name) {
 		return fmt.Errorf("secret %q: alias must match %s", name, aliasRe)
 	}
 	if !strings.HasPrefix(s.Ref, "op://") {
 		return fmt.Errorf("secret %q: ref must start with op://", name)
 	}
-	if s.Account == "" {
+	if requireAccount && s.Account == "" {
 		return fmt.Errorf("secret %q: account is required", name)
 	}
 	if s.Env != "" && !envRe.MatchString(s.Env) {

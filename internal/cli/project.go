@@ -29,6 +29,20 @@ func projectFile(arg string) (string, error) {
 	return config.FindProject(wd)
 }
 
+// projectOptions inspects config.toml (without trusted projects) to learn
+// whether service_account_token_file allows accountless project secrets.
+func (a *app) projectOptions() config.ProjectOptions {
+	data, err := os.ReadFile(a.configPath)
+	if err != nil {
+		return config.ProjectOptions{}
+	}
+	cfg, err := config.Parse(data)
+	if err != nil {
+		return config.ProjectOptions{}
+	}
+	return cfg.ProjectOptions()
+}
+
 // checkTrusted fails with ExitNotAllowed unless the trusted copy of p allows
 // exactly what the project file at path declares. For a varlock schema it is
 // enough that the trusted copy allows every secret of the schema: the
@@ -36,12 +50,12 @@ func projectFile(arg string) (string, error) {
 // declare different secrets. It returns the project to bind, with the
 // aliases of the trusted copy. A schema with nothing for sefko to serve
 // needs no trust.
-func (a *app) checkTrusted(path string, p *config.Project) (*config.Project, error) {
+func (a *app) checkTrusted(path string, p *config.Project, opts config.ProjectOptions) (*config.Project, error) {
 	schema := config.IsSchema(path)
 	if schema && len(p.Secrets) == 0 {
 		return p, nil
 	}
-	t, err := config.LoadProject(config.TrustedPath(a.configPath, p.Name))
+	t, err := config.LoadProject(config.TrustedPath(a.configPath, p.Name), opts)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, exit(ExitNotAllowed, fmt.Errorf("project %s is not trusted; review %s and run `sefko trust`", p.Name, path))
 	}
@@ -62,11 +76,12 @@ func (a *app) projectBindings() ([]binding, error) {
 	if err != nil {
 		return nil, exit(ExitError, err)
 	}
-	p, _, err := config.ReadProjectFile(path)
+	opts := a.projectOptions()
+	p, _, err := config.ReadProjectFile(path, opts)
 	if err != nil {
 		return nil, exit(ExitError, err)
 	}
-	bound, err := a.checkTrusted(path, p)
+	bound, err := a.checkTrusted(path, p, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,9 +107,10 @@ func (a *app) optionalProjectBindings() []binding {
 			return nil
 		}
 	}
-	p, _, err := config.ReadProjectFile(path)
+	opts := a.projectOptions()
+	p, _, err := config.ReadProjectFile(path, opts)
 	if err == nil {
-		p, err = a.checkTrusted(path, p)
+		p, err = a.checkTrusted(path, p, opts)
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(a.io.Stderr, "sefko:", err)
@@ -158,12 +174,13 @@ func (a *app) trustCmd() *cobra.Command {
 			if err != nil {
 				return exit(ExitError, err)
 			}
-			p, notes, err := config.ReadProjectFile(path)
+			opts := a.projectOptions()
+			p, notes, err := config.ReadProjectFile(path, opts)
 			if err != nil {
 				return exit(ExitError, err)
 			}
 			if check {
-				_, err := a.checkTrusted(path, p)
+				_, err := a.checkTrusted(path, p, opts)
 				return err
 			}
 			if len(p.Secrets) == 0 {
@@ -175,7 +192,7 @@ func (a *app) trustCmd() *cobra.Command {
 			own := p
 			var others []string
 			if config.IsSchema(path) {
-				if t, err := config.LoadProject(trustedPath); err == nil && t.Name == p.Name {
+				if t, err := config.LoadProject(trustedPath, opts); err == nil && t.Name == p.Name {
 					merged := t.Merge(p)
 					for _, alias := range merged.Aliases() {
 						if _, mine := own.Secrets[alias]; !mine {
@@ -203,7 +220,7 @@ func (a *app) trustCmd() *cobra.Command {
 					validate = s.Validate.URL
 				}
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", own.QualifiedName(alias), cmpOr(s.Env, "-"),
-					printable(s.Account), printable(s.Ref), printable(validate))
+					cmpOr(printable(s.Account), "-"), printable(s.Ref), printable(validate))
 			}
 			if err := tw.Flush(); err != nil {
 				return err
@@ -232,7 +249,7 @@ func (a *app) untrustCmd() *cobra.Command {
 				if err != nil {
 					return exit(ExitError, err)
 				}
-				p, _, err := config.ReadProjectFile(path)
+				p, _, err := config.ReadProjectFile(path, a.projectOptions())
 				if err != nil {
 					return exit(ExitError, err)
 				}

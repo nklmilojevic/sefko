@@ -27,10 +27,17 @@ type Project struct {
 	Secrets map[string]Secret `toml:"secrets"`
 }
 
+// ProjectOptions controls how a project file is validated.
+type ProjectOptions struct {
+	// AllowEmptyAccount permits project secrets without an account, for hosts
+	// that authenticate through service_account_token_file.
+	AllowEmptyAccount bool
+}
+
 // ValidName reports whether s can be an alias or a project name.
 func ValidName(s string) bool { return aliasRe.MatchString(s) }
 
-func ParseProject(data []byte) (*Project, error) {
+func ParseProject(data []byte, opts ProjectOptions) (*Project, error) {
 	var p Project
 	if err := decodeStrict(data, &p); err != nil {
 		return nil, err
@@ -41,12 +48,13 @@ func ParseProject(data []byte) (*Project, error) {
 	if len(p.Secrets) == 0 {
 		return nil, fmt.Errorf("project %q has no secrets", p.Name)
 	}
+	requireAccount := !opts.AllowEmptyAccount
 	for _, alias := range p.Aliases() {
 		s := p.Secrets[alias]
 		if s.Account == "" {
 			s.Account = p.Account
 		}
-		if err := checkSecret(alias, s); err != nil {
+		if err := checkSecret(alias, s, requireAccount); err != nil {
 			return nil, err
 		}
 		p.Secrets[alias] = s
@@ -54,12 +62,12 @@ func ParseProject(data []byte) (*Project, error) {
 	return &p, nil
 }
 
-func LoadProject(path string) (*Project, error) {
+func LoadProject(path string, opts ProjectOptions) (*Project, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	p, err := ParseProject(data)
+	p, err := ParseProject(data, opts)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
@@ -181,7 +189,7 @@ func FindProject(dir string) (string, error) {
 
 // ReadProjectFile reads a ProjectFile, or derives a project from a SchemaFile.
 // The notes list the schema items that sefko leaves to varlock.
-func ReadProjectFile(path string) (*Project, []string, error) {
+func ReadProjectFile(path string, opts ProjectOptions) (*Project, []string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, err
@@ -191,7 +199,7 @@ func ReadProjectFile(path string) (*Project, []string, error) {
 	if IsSchema(path) {
 		p, notes, err = ParseSchema(SchemaProjectName(path), data)
 	} else {
-		p, err = ParseProject(data)
+		p, err = ParseProject(data, opts)
 	}
 	if err != nil {
 		return nil, notes, fmt.Errorf("%s: %w", path, err)
@@ -265,8 +273,9 @@ func (f *Files) Parse() (*Config, []error, error) {
 	if cfg.Secrets == nil {
 		cfg.Secrets = map[string]Secret{}
 	}
+	opts := cfg.ProjectOptions()
 	for _, pd := range f.projects {
-		p, err := ParseProject(pd.data)
+		p, err := ParseProject(pd.data, opts)
 		if err == nil && filepath.Base(pd.path) != p.Name+".toml" {
 			err = fmt.Errorf("project %q must be in %s.toml", p.Name, p.Name)
 		}

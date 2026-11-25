@@ -39,8 +39,9 @@ let
         description = "1Password secret reference.";
       };
       account = mkOption {
-        type = types.str;
-        description = "1Password account (sign-in address or ID).";
+        type = types.nullOr types.str;
+        default = null;
+        description = "1Password account (sign-in address or ID). Optional when `serviceAccountTokenFile` is set.";
       };
       env = mkOption {
         type = types.nullOr types.str;
@@ -95,6 +96,8 @@ let
     ttl = cfg.ttl;
     fetch_timeout = cfg.fetchTimeout;
     secrets = lib.mapAttrs (_: s: lib.filterAttrs (_: v: v != null) s) cfg.secrets;
+  } // lib.optionalAttrs (cfg.serviceAccountTokenFile != null) {
+    service_account_token_file = cfg.serviceAccountTokenFile;
   };
 in
 {
@@ -113,6 +116,18 @@ in
       default = pkgs._1password-cli;
       defaultText = lib.literalExpression "pkgs._1password-cli";
       description = "Package providing the `op` binary the agent runs.";
+    };
+
+    serviceAccountTokenFile = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "~/.config/sefko/op-service-account-token";
+      description = ''
+        Path to a file (mode 0600 or 0400) containing a 1Password Service
+        Account token. When set, sefko authenticates with
+        OP_SERVICE_ACCOUNT_TOKEN instead of the 1Password desktop app, and
+        `secrets.<alias>.account` becomes optional.
+      '';
     };
 
     ttl = mkOption {
@@ -156,7 +171,13 @@ in
         assertion = pkgs.stdenv.hostPlatform.isDarwin;
         message = "programs.sefko only supports macOS for now.";
       }
-    ] ++ lib.concatLists (lib.mapAttrsToList
+    ] ++ lib.mapAttrsToList
+      (name: s: {
+        assertion = s.account != null || cfg.serviceAccountTokenFile != null;
+        message = "programs.sefko.secrets.${name}: set account, or set programs.sefko.serviceAccountTokenFile.";
+      })
+      cfg.secrets
+    ++ lib.concatLists (lib.mapAttrsToList
       (name: w: [
         {
           assertion = cfg.secrets ? ${w.secret};

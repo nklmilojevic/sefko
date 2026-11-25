@@ -31,7 +31,7 @@ var (
 )
 
 // ReadFunc fetches one secret from 1Password.
-type ReadFunc func(ctx context.Context, opPath, account, ref string) ([]byte, error)
+type ReadFunc func(ctx context.Context, opPath string, auth opread.Auth, ref string) ([]byte, error)
 
 type Options struct {
 	ConfigPath string
@@ -226,10 +226,11 @@ func (a *Agent) Reload() error {
 	}
 	logWarnings(a.opts.Log, warnings)
 	a.mu.Lock()
+	authChanged := a.cfg.ServiceAccountTokenFile != cfg.ServiceAccountTokenFile
 	for _, name := range a.cfg.Names() {
 		old := a.cfg.Secrets[name]
 		cur, ok := cfg.Secrets[name]
-		if !ok || !cur.SameSource(old) {
+		if !ok || authChanged || !cur.SameSource(old) {
 			a.dropLocked(name)
 		}
 		delete(a.validations, name)
@@ -248,7 +249,7 @@ func (a *Agent) fetch(name string) error {
 		a.mu.Lock()
 		sec, ok := a.cfg.Secrets[name]
 		key := a.epochKey(name)
-		opPath, timeout := a.cfg.OpPath, a.cfg.FetchTimeoutDuration()
+		opPath, tokenFile, timeout := a.cfg.OpPath, a.cfg.ServiceAccountTokenFile, a.cfg.FetchTimeoutDuration()
 		a.mu.Unlock()
 		if !ok {
 			return nil, errNotAllowed
@@ -256,7 +257,7 @@ func (a *Agent) fetch(name string) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
-		raw, err := a.opts.Read(ctx, opPath, sec.Account, sec.Ref)
+		raw, err := a.opts.Read(ctx, opPath, opread.Auth{Account: sec.Account, TokenFile: tokenFile}, sec.Ref)
 		if err != nil {
 			return nil, err
 		}
@@ -269,7 +270,7 @@ func (a *Agent) fetch(name string) error {
 		a.mu.Lock()
 		defer a.mu.Unlock()
 		cur, ok := a.cfg.Secrets[name]
-		if !ok || !cur.SameSource(sec) || a.epochKey(name) != key {
+		if !ok || !cur.SameSource(sec) || a.cfg.ServiceAccountTokenFile != tokenFile || a.epochKey(name) != key {
 			buf.Free()
 			return nil, errWiped
 		}
