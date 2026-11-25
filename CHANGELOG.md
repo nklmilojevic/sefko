@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.5.0 - 2026-11-25
+
+Version 0.4.0 adds support for 1Password service account tokens. You can use sefko on remote Macs where the desktop approval dialog cannot be used.
+
+### New features
+
+- Add the `service_account_token_file` config field. Set it to the path of a 1Password service account token file.
+
 ## v0.4.0 - 2026-11-10
 
 This release fixes how sefko checks schema trust. Repositories trusted with v0.3.0 must be trusted again.
